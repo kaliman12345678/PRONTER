@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ClipboardPaste,
   FileSpreadsheet,
   FileText,
   FileUp,
+  Link2,
   Plus,
   Save,
   Scissors,
@@ -21,6 +25,10 @@ import {
   type ScriptDocument
 } from '../types/models';
 import {
+  parsePastedScriptBatch,
+  type ParsedBatchPiece
+} from '../utils/batchScriptParser';
+import {
   guessExcelMapping,
   mapExcelRowsToBlocks,
   parseExcelBuffer,
@@ -30,7 +38,6 @@ import {
 import { parsePdfBuffer } from '../utils/importers/pdfImporter';
 import { parseWordBuffer } from '../utils/importers/wordImporter';
 import { readFromClipboard } from '../utils/clipboard';
-import { splitTextIntoBlocks } from '../utils/textSplitter';
 
 interface Props {
   projects: Project[];
@@ -41,9 +48,10 @@ interface Props {
   onCreateProject: (name: string) => Promise<Project>;
   onCreatePiece: (projectId: string, title: string) => Promise<ContentPiece>;
   onSaveImportedDocument: (doc: ScriptDocument) => Promise<void>;
+  onSaveImportedBatch: (projectId: string, batchPieces: ParsedBatchPiece[]) => Promise<void>;
 }
 
-type ImportStep = 'pick' | 'excel-map' | 'manual-split' | 'review';
+type ImportStep = 'pick' | 'excel-map' | 'manual-split' | 'review' | 'batch-review';
 
 export function ImportPage({
   projects,
@@ -53,7 +61,8 @@ export function ImportPage({
   initialMode = 'pick',
   onCreateProject,
   onCreatePiece,
-  onSaveImportedDocument
+  onSaveImportedDocument,
+  onSaveImportedBatch
 }: Props) {
   const [step, setStep] = useState<ImportStep>(
     initialMode === 'paste' ? 'manual-split' : 'pick'
@@ -75,6 +84,8 @@ export function ImportPage({
 
   // Unstructured / manual text state
   const [manualText, setManualText] = useState('');
+  const [batchPieces, setBatchPieces] = useState<ParsedBatchPiece[]>([]);
+  const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null);
 
   // Review & target metadata
   const [docTitle, setDocTitle] = useState(initialMode === 'paste' ? 'Guion pegado' : '');
@@ -207,14 +218,62 @@ export function ImportPage({
   };
 
   const handleSplitManualText = () => {
-    const split = splitTextIntoBlocks(manualText);
-    if (split.blocks.length === 0) {
+    const parsed = parsePastedScriptBatch(manualText);
+    if (parsed.pieces.length === 0 || parsed.pieces[0].blocks.length === 0) {
       setErrorMsg('Pega o escribe algún texto antes de continuar.');
       return;
     }
     setErrorMsg(null);
-    setBlocks(split.blocks);
+
+    if (parsed.mode === 'batch-pieces') {
+      setBatchPieces(parsed.pieces);
+      if (parsed.suggestedProjectName) {
+        const matched = projects.find(
+          (p) => p.name.toLowerCase() === parsed.suggestedProjectName!.toLowerCase()
+        );
+        if (matched) {
+          setTargetProjectId(matched.id);
+        } else {
+          setTargetProjectId('__new__');
+          setNewProjectName(parsed.suggestedProjectName);
+        }
+      }
+      setStatusMsg(
+        `Se detectaron ${parsed.pieces.length} ${
+          parsed.pieces.length === 1 ? 'pieza de contenido' : 'piezas de contenido'
+        } con sus escenas, indicaciones y enlaces.`
+      );
+      setStep('batch-review');
+      return;
+    }
+
+    setBlocks(parsed.pieces[0].blocks);
+    if (parsed.mode === 'single-table') {
+      setStatusMsg(
+        `Se detectaron ${parsed.pieces[0].blocks.length} escenas con indicaciones y libreto.`
+      );
+    }
     setStep('review');
+  };
+
+  const handleSaveBatch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const selected = batchPieces.filter((p) => p.selected);
+    if (selected.length === 0) {
+      setErrorMsg('Selecciona al menos una pieza para guardar.');
+      return;
+    }
+    setErrorMsg(null);
+    let finalProjectId = targetProjectId;
+    if (finalProjectId === '__new__') {
+      if (!newProjectName.trim()) {
+        setErrorMsg('Escribe el nombre del nuevo proyecto.');
+        return;
+      }
+      const created = await onCreateProject(newProjectName.trim());
+      finalProjectId = created.id;
+    }
+    await onSaveImportedBatch(finalProjectId, selected);
   };
 
   const handlePasteFromClipboard = async () => {
@@ -688,6 +747,188 @@ export function ImportPage({
           <button type="submit" className="btn btn-primary btn-lg btn-block">
             <Save size={20} />
             Guardar documento
+          </button>
+        </form>
+      )}
+
+      {step === 'batch-review' && (
+        <form
+          onSubmit={handleSaveBatch}
+          style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
+        >
+          <div className="card">
+            <div className="row-between">
+              <div className="row">
+                <CheckCircle2 size={20} color="#34d399" />
+                <strong>Importación múltiple detectada</strong>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setStep('manual-split')}
+              >
+                Editar texto
+              </button>
+            </div>
+
+            <div className="field">
+              <label htmlFor="batch-project">Proyecto destino</label>
+              <select
+                id="batch-project"
+                className="select"
+                value={targetProjectId}
+                onChange={(e) => setTargetProjectId(e.target.value)}
+              >
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+                <option value="__new__">+ Crear nuevo proyecto...</option>
+              </select>
+            </div>
+
+            {targetProjectId === '__new__' && (
+              <div className="field">
+                <label htmlFor="batch-new-proj">Nombre del nuevo proyecto</label>
+                <input
+                  id="batch-new-proj"
+                  className="input"
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  placeholder="Ej. NOXA"
+                  required
+                />
+              </div>
+            )}
+          </div>
+
+          <h3 className="section-title">
+            Piezas detectadas ({batchPieces.filter((p) => p.selected).length} de{' '}
+            {batchPieces.length})
+          </h3>
+
+          {batchPieces.map((piece, idx) => {
+            const isExpanded = expandedBatchId === piece.id;
+            return (
+              <div key={piece.id} className="card" style={{ gap: 10 }}>
+                <div className="row-between" style={{ alignItems: 'flex-start' }}>
+                  <button
+                    type="button"
+                    className="row"
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      padding: 0,
+                      textAlign: 'left',
+                      flex: 1
+                    }}
+                    onClick={() =>
+                      setBatchPieces((prev) =>
+                        prev.map((p, i) =>
+                          i === idx ? { ...p, selected: !p.selected } : p
+                        )
+                      )
+                    }
+                  >
+                    <span
+                      className="checkbox-box"
+                      style={
+                        piece.selected
+                          ? {
+                              background: 'var(--primary)',
+                              borderColor: 'var(--primary)',
+                              color: 'var(--primary-text)'
+                            }
+                          : undefined
+                      }
+                    >
+                      {piece.selected && <Check size={15} strokeWidth={3} />}
+                    </span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <span className="muted" style={{ fontSize: '0.76rem', display: 'block' }}>
+                        {piece.referenceLabel}
+                      </span>
+                      <strong style={{ fontSize: '1rem' }}>{piece.pieceTitle}</strong>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Ver escenas"
+                    onClick={() =>
+                      setExpandedBatchId(isExpanded ? null : piece.id)
+                    }
+                  >
+                    {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                  </button>
+                </div>
+
+                <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+                  <span className="badge">
+                    {piece.blocks.length} {piece.blocks.length === 1 ? 'bloque' : 'bloques'}
+                  </span>
+                  {piece.referenceUrl && (
+                    <span className="badge libreto">
+                      <Link2 size={12} />
+                      Enlace incluido
+                    </span>
+                  )}
+                </div>
+
+                {isExpanded && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                      borderTop: '1px solid var(--border)',
+                      paddingTop: 10
+                    }}
+                  >
+                    <div className="field">
+                      <label>Nombre de la pieza</label>
+                      <input
+                        className="input"
+                        value={piece.pieceTitle}
+                        onChange={(e) =>
+                          setBatchPieces((prev) =>
+                            prev.map((p, i) =>
+                              i === idx ? { ...p, pieceTitle: e.target.value } : p
+                            )
+                          )
+                        }
+                      />
+                    </div>
+                    {piece.blocks.map((b) => (
+                      <div
+                        key={b.id}
+                        style={{
+                          background: 'var(--bg-input)',
+                          padding: 10,
+                          borderRadius: 8,
+                          fontSize: '0.88rem'
+                        }}
+                      >
+                        <strong style={{ color: '#38bdf8' }}>{b.title}</strong>
+                        <p style={{ margin: '4px 0 0' }}>{b.text}</p>
+                        {b.cues && (
+                          <p className="muted" style={{ margin: '4px 0 0', fontSize: '0.8rem' }}>
+                            Indicación: {b.cues}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          <button type="submit" className="btn btn-primary btn-lg btn-block">
+            <Save size={20} />
+            Guardar {batchPieces.filter((p) => p.selected).length} piezas en el proyecto
           </button>
         </form>
       )}

@@ -29,6 +29,7 @@ import type {
 } from './types/models';
 import { splitTextIntoBlocks } from './utils/textSplitter';
 import { selectBlocksForTeleprompter } from './utils/teleprompter';
+import type { ParsedBatchPiece } from './utils/batchScriptParser';
 
 type ViewState =
   | { name: 'home' }
@@ -405,6 +406,32 @@ export function App() {
               await refreshAll();
               setView({ name: 'document', docId: doc.id });
               showToast(`"${doc.title}" guardado`);
+            }}
+            onSaveImportedBatch={async (projectId, batchPieces: ParsedBatchPiece[]) => {
+              const now = Date.now();
+              for (let i = 0; i < batchPieces.length; i++) {
+                const item = batchPieces[i];
+                const piece = await savePiece({
+                  id: createId('piece'),
+                  projectId,
+                  title: item.pieceTitle,
+                  referenceUrl: item.referenceUrl,
+                  createdAt: now + i,
+                  updatedAt: now + i
+                });
+                await saveDocument({
+                  id: createId('doc'),
+                  pieceId: piece.id,
+                  title: item.docTitle || 'Guion final',
+                  type: item.docType,
+                  blocks: item.blocks,
+                  createdAt: now + i,
+                  updatedAt: now + i
+                });
+              }
+              await refreshAll();
+              setView({ name: 'project', projectId });
+              showToast(`${batchPieces.length} piezas guardadas en el proyecto`);
             }}
           />
         )}

@@ -16,6 +16,7 @@ import {
 } from '../utils/importers/excelImporter';
 import { selectBlocksForTeleprompter } from '../utils/teleprompter';
 import { splitTextIntoBlocks } from '../utils/textSplitter';
+import { parsePastedScriptBatch } from '../utils/batchScriptParser';
 import { parseReferenceVideoUrl } from '../utils/videoEmbed';
 import { App } from '../App';
 
@@ -119,6 +120,39 @@ describe('Guion en Pantalla - Lógica y Datos', () => {
     const loaded = await getDocument('doc-test-persist');
     expect(loaded?.title).toBe('Notas de prueba');
     expect(loaded?.blocks[0].text).toBe('Persistente');
+  });
+
+  it('interpreta múltiples bloques REFERENCIA con enlaces, Tiempo, Plano y acción y Libreto', () => {
+    const sample = [
+      'REFERENCIA 01 · Ella elige un look de Zara para su novio',
+      'Guion NOXA\tDos pintas con la misma camiseta negra\thttps://www.tiktok.com/@dreamfits.neer/video/7570339687676611862',
+      'Tiempo\tPlano y acción\tLibreto',
+      '0–4 s\tPlano desde arriba.\t«Él solo usa camisetas negras».',
+      '4–9 s\tMuestra la primera combinación.\t«Para el día, un jean recto».',
+      '',
+      'REFERENCIA 11 · Julian Valencia · Le compré un vestido a mi novia',
+      'Guion NOXA\tLa camiseta titular · 18 s\thttps://www.instagram.com/p/C5jnPT0gHFn/',
+      'Tiempo\tPlano y acción\tLibreto',
+      '0–4 s · Hook\tPlano medio.\t«Si tenés una camiseta negra titular, te conozco».',
+      'Texto para publicar\tLa camiseta titular juega todos los partidos.\t¿De qué color es la tuya?'
+    ].join('\n');
+
+    const result = parsePastedScriptBatch(sample);
+    expect(result.mode).toBe('batch-pieces');
+    expect(result.suggestedProjectName).toBe('NOXA');
+    expect(result.pieces).toHaveLength(2);
+
+    expect(result.pieces[0].pieceTitle).toBe('Dos pintas con la misma camiseta negra');
+    expect(result.pieces[0].referenceUrl).toBe(
+      'https://www.tiktok.com/@dreamfits.neer/video/7570339687676611862'
+    );
+    expect(result.pieces[0].blocks[0].title).toBe('0–4 s');
+    expect(result.pieces[0].blocks[0].cues).toBe('Plano desde arriba.');
+    expect(result.pieces[0].blocks[0].text).toBe('Él solo usa camisetas negras.');
+
+    expect(result.pieces[1].pieceTitle).toBe('La camiseta titular · 18 s');
+    expect(result.pieces[1].blocks[0].title).toBe('0–4 s · Hook');
+    expect(result.pieces[1].blocks[1].title).toBe('Texto para publicar');
   });
 });
 
