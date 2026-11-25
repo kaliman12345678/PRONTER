@@ -29,12 +29,16 @@ function fromBase64Url(str: string): Uint8Array {
 async function compressString(input: string): Promise<{ compressed: boolean; data: string }> {
   const utf8 = new TextEncoder().encode(input);
   if (typeof CompressionStream !== 'undefined') {
-    const cs = new CompressionStream('gzip');
-    const writer = cs.writable.getWriter();
-    await writer.write(utf8);
-    await writer.close();
-    const buf = await new Response(cs.readable).arrayBuffer();
-    return { compressed: true, data: toBase64Url(new Uint8Array(buf)) };
+    try {
+      const cs = new CompressionStream('gzip');
+      const writer = cs.writable.getWriter();
+      await writer.write(utf8);
+      await writer.close();
+      const buf = await new Response(cs.readable).arrayBuffer();
+      return { compressed: true, data: toBase64Url(new Uint8Array(buf)) };
+    } catch {
+      // Fallback to uncompressed base64url
+    }
   }
   return { compressed: false, data: toBase64Url(utf8) };
 }

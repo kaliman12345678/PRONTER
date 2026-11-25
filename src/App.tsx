@@ -30,7 +30,6 @@ import type {
 import { splitTextIntoBlocks } from './utils/textSplitter';
 import { selectBlocksForTeleprompter } from './utils/teleprompter';
 import type { ParsedBatchPiece } from './utils/batchScriptParser';
-import { copyToClipboard } from './utils/clipboard';
 import {
   buildProjectSharePayload,
   decodeProjectShareHash,
@@ -285,16 +284,18 @@ export function App() {
     setView({ name: 'piece', pieceId });
   };
 
-  const handleShareProjectLink = async (projectId: string) => {
-    const payload = await buildProjectSharePayload(projectId);
-    if (!payload) return;
-    const shareUrl = await encodeProjectShareUrl(payload, window.location.href);
-    const ok = await copyToClipboard(shareUrl);
-    showToast(
-      ok
-        ? 'Enlace copiado. Ábrelo en tu celular para cargar el proyecto'
-        : 'No se pudo copiar el enlace'
-    );
+  const handleGenerateShareLink = async (projectId: string): Promise<string | null> => {
+    try {
+      const payload = await buildProjectSharePayload(projectId);
+      if (!payload) {
+        showToast('No se encontró el proyecto');
+        return null;
+      }
+      return await encodeProjectShareUrl(payload, window.location.href);
+    } catch {
+      showToast('No se pudo generar el enlace');
+      return null;
+    }
   };
 
   const handleDownloadProjectJson = async (projectId: string) => {
@@ -429,8 +430,9 @@ export function App() {
             }}
             onOpenPiece={(pieceId) => void handleOpenPiece(pieceId)}
             onDeletePiece={handleDeletePiece}
-            onShareProjectLink={handleShareProjectLink}
+            onGenerateShareLink={handleGenerateShareLink}
             onDownloadProjectJson={handleDownloadProjectJson}
+            onNotify={showToast}
           />
         )}
 
