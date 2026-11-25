@@ -31,10 +31,11 @@ async function compressString(input: string): Promise<{ compressed: boolean; dat
   if (typeof CompressionStream !== 'undefined') {
     try {
       const cs = new CompressionStream('gzip');
+      const bufPromise = new Response(cs.readable).arrayBuffer();
       const writer = cs.writable.getWriter();
-      await writer.write(utf8);
-      await writer.close();
-      const buf = await new Response(cs.readable).arrayBuffer();
+      void writer.write(utf8);
+      void writer.close();
+      const buf = await bufPromise;
       return { compressed: true, data: toBase64Url(new Uint8Array(buf)) };
     } catch {
       // Fallback to uncompressed base64url
@@ -47,10 +48,11 @@ async function decompressString(data: string, compressed: boolean): Promise<stri
   const bytes = fromBase64Url(data);
   if (compressed && typeof DecompressionStream !== 'undefined') {
     const ds = new DecompressionStream('gzip');
+    const bufPromise = new Response(ds.readable).arrayBuffer();
     const writer = ds.writable.getWriter();
-    await writer.write(new Uint8Array(bytes));
-    await writer.close();
-    const buf = await new Response(ds.readable).arrayBuffer();
+    void writer.write(new Uint8Array(bytes));
+    void writer.close();
+    const buf = await bufPromise;
     return new TextDecoder().decode(buf);
   }
   return new TextDecoder().decode(bytes);
