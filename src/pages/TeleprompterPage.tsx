@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
   Eye,
   EyeOff,
+  Mic,
+  MicOff,
   Minus,
   Pause,
   Play,
@@ -16,6 +18,13 @@ import {
   loadTeleprompterSettings,
   saveTeleprompterSettings
 } from '../utils/preferences';
+import {
+  buildWordIndex,
+  findNextWordMatch,
+  getSpeechRecognitionConstructor,
+  tokenizeBlockWords,
+  type SpeechRecognitionLike
+} from '../utils/voiceTracker';
 
 interface Props {
   documentTitle: string;
@@ -31,9 +40,38 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
   const [showControls, setShowControls] = useState(true);
   const [activeIndex, setActiveIndex] = useState(0);
 
+  // Voice tracking state
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+  const [matchedWordIndex, setMatchedWordIndex] = useState(0);
+
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const blockRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const wordRefs = useRef<Record<number, HTMLSpanElement | null>>({});
   const lastFrameRef = useRef<number | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const voiceEnabledRef = useRef(false);
+  const matchedWordRef = useRef(0);
+
+  const indexedWords = useMemo(() => buildWordIndex(blocks), [blocks]);
+
+  const blockStartOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let count = 0;
+    for (const block of blocks) {
+      offsets.push(count);
+      count += tokenizeBlockWords(block.text).length;
+    }
+    return offsets;
+  }, [blocks]);
+
+  useEffect(() => {
+    voiceEnabledRef.current = voiceEnabled;
+  }, [voiceEnabled]);
+
+  useEffect(() => {
+    matchedWordRef.current = matchedWordIndex;
+  }, [matchedWordIndex]);
 
   useEffect(() => {
     saveTeleprompterSettings(settings);
@@ -68,9 +106,112 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
     return () => cancelAnimationFrame(rafId);
   }, [isPlaying, settings.speed]);
 
+  // Speech recognition loop for "Seguir mi voz"
+  useEffect(() => {
+    if (!voiceEnabled) {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {
+          // ignore
+        }
+        recognitionRef.current = null;
+      }
+      return;
+    }
+
+    const SpeechCtor = getSpeechRecognitionConstructor();
+    if (!SpeechCtor) {
+      setVoiceEnabled(false);
+      setVoiceNotice('Tu navegador no soporta seguimiento por voz. Usa Leer.');
+      return;
+    }
+
+    const recognition = new SpeechCtor();
+    recognition.lang = 'es-ES';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognitionRef.current = recognition;
+
+    recognition.onresult = (event) => {
+      let transcript = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += ` ${event.results[i][0].transcript}`;
+      }
+      const nextIdx = findNextWordMatch(
+        indexedWords,
+        matchedWordRef.current,
+        transcript
+      );
+      if (nextIdx > matchedWordRef.current) {
+        matchedWordRef.current = nextIdx;
+        setMatchedWordIndex(nextIdx);
+        const wordEntry = indexedWords[nextIdx];
+        if (wordEntry) {
+          setActiveIndex(wordEntry.blockIndex);
+        }
+        const wordEl = wordRefs.current[nextIdx];
+        if (wordEl && scrollRef.current) {
+          const targetTop = Math.max(0, wordEl.offsetTop - 72);
+          scrollRef.current.scrollTo({ top: targetTop, behavior: 'smooth' });
+        }
+      }
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error === 'no-speech') return;
+      if (event.error === 'not-allowed' || event.error === 'audio-capture') {
+        setVoiceNotice('Micrófono no disponible o bloqueado. Usa Leer.');
+        setVoiceEnabled(false);
+      } else if (event.error === 'network') {
+        setVoiceNotice('El seguimiento por voz requiere conexión en este navegador.');
+        setVoiceEnabled(false);
+      }
+    };
+
+    recognition.onend = () => {
+      if (voiceEnabledRef.current) {
+        try {
+          recognition.start();
+        } catch {
+          // ignore restart errors
+        }
+      }
+    };
+
+    try {
+      recognition.start();
+      setVoiceNotice('Escuchando tu voz...');
+    } catch {
+      setVoiceEnabled(false);
+      setVoiceNotice('No se pudo iniciar el micrófono.');
+    }
+
+    return () => {
+      try {
+        recognition.stop();
+      } catch {
+        // ignore
+      }
+    };
+  }, [voiceEnabled, indexedWords]);
+
+  const toggleVoiceMode = () => {
+    setVoiceNotice(null);
+    if (!voiceEnabled) {
+      setIsPlaying(false);
+      setVoiceEnabled(true);
+    } else {
+      setVoiceEnabled(false);
+    }
+  };
+
   const jumpToBlock = (index: number) => {
     const clamped = Math.max(0, Math.min(blocks.length - 1, index));
     setActiveIndex(clamped);
+    const startWord = blockStartOffsets[clamped] ?? 0;
+    matchedWordRef.current = startWord;
+    setMatchedWordIndex(startWord);
     const el = blockRefs.current[clamped];
     if (el && scrollRef.current) {
       scrollRef.current.scrollTo({
@@ -83,6 +224,8 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
   const resetToTop = () => {
     setIsPlaying(false);
     setActiveIndex(0);
+    matchedWordRef.current = 0;
+    setMatchedWordIndex(0);
     scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -154,28 +297,54 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
         data-testid="teleprompter-reading-area"
       >
         <div className="teleprompter-content">
-          {blocks.map((block, idx) => (
-            <div
-              key={block.id}
-              ref={(el) => {
-                blockRefs.current[idx] = el;
-              }}
-              data-testid={`teleprompter-block-${idx}`}
-            >
-              <div className="teleprompter-block-label">
-                {idx + 1}/{blocks.length} · {block.title}
-              </div>
-              <p
-                className="teleprompter-block-text"
-                style={{ fontSize: `${settings.fontSize}px` }}
+          {blocks.map((block, idx) => {
+            const blockOffset = blockStartOffsets[idx] ?? 0;
+            const tokens = tokenizeBlockWords(block.text);
+            return (
+              <div
+                key={block.id}
+                ref={(el) => {
+                  blockRefs.current[idx] = el;
+                }}
+                data-testid={`teleprompter-block-${idx}`}
               >
-                {block.text}
-              </p>
-              {settings.showCues && block.cues && (
-                <div className="teleprompter-block-cues">{block.cues}</div>
-              )}
-            </div>
-          ))}
+                <div className="teleprompter-block-label">
+                  {idx + 1}/{blocks.length} · {block.title}
+                </div>
+                <p
+                  className="teleprompter-block-text"
+                  style={{ fontSize: `${settings.fontSize}px` }}
+                >
+                  {voiceEnabled
+                    ? tokens.map((token, wordIdx) => {
+                        const globalIdx = blockOffset + wordIdx;
+                        const isPassed = globalIdx < matchedWordIndex;
+                        const isCurrent = globalIdx === matchedWordIndex;
+                        return (
+                          <span
+                            key={globalIdx}
+                            ref={(el) => {
+                              wordRefs.current[globalIdx] = el;
+                            }}
+                            style={{
+                              color: isPassed ? '#64748b' : '#ffffff',
+                              textDecoration: isCurrent ? 'underline' : 'none',
+                              textDecorationColor: '#38bdf8',
+                              textUnderlineOffset: '6px'
+                            }}
+                          >
+                            {token.raw}{' '}
+                          </span>
+                        );
+                      })
+                    : block.text}
+                </p>
+                {settings.showCues && block.cues && (
+                  <div className="teleprompter-block-cues">{block.cues}</div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -184,6 +353,18 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
           className="teleprompter-controls-bottom"
           onClick={(e) => e.stopPropagation()}
         >
+          {voiceNotice && (
+            <div
+              style={{
+                fontSize: '0.8rem',
+                textAlign: 'center',
+                color: voiceEnabled ? '#38bdf8' : '#fde68a'
+              }}
+            >
+              {voiceNotice}
+            </div>
+          )}
+
           <div className="row-between">
             <button
               type="button"
@@ -199,8 +380,11 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
             <button
               type="button"
               className="btn btn-primary"
-              style={{ minWidth: 132 }}
-              onClick={() => setIsPlaying((p) => !p)}
+              style={{ minWidth: 112 }}
+              onClick={() => {
+                if (!isPlaying) setVoiceEnabled(false);
+                setIsPlaying((p) => !p);
+              }}
             >
               {isPlaying ? <Pause size={20} /> : <Play size={20} fill="currentColor" />}
               {isPlaying ? 'Pausar' : 'Leer'}
@@ -219,6 +403,15 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
           </div>
 
           <div className="row-between" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <button
+              type="button"
+              className={`tp-pill-btn ${voiceEnabled ? 'active' : ''}`}
+              onClick={toggleVoiceMode}
+              aria-label="Seguir mi voz"
+            >
+              {voiceEnabled ? <Mic size={16} /> : <MicOff size={16} />}
+              {voiceEnabled ? 'Voz activa' : 'Seguir mi voz'}
+            </button>
             <div className="row" style={{ gap: 6 }}>
               <span className="muted" style={{ fontSize: '0.8rem' }}>
                 Vel: {settings.speed}

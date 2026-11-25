@@ -17,6 +17,7 @@ import {
 import { selectBlocksForTeleprompter } from '../utils/teleprompter';
 import { splitTextIntoBlocks } from '../utils/textSplitter';
 import { parsePastedScriptBatch } from '../utils/batchScriptParser';
+import { buildWordIndex, findNextWordMatch } from '../utils/voiceTracker';
 import { parseReferenceVideoUrl } from '../utils/videoEmbed';
 import { App } from '../App';
 
@@ -153,6 +154,22 @@ describe('Guion en Pantalla - Lógica y Datos', () => {
     expect(result.pieces[1].pieceTitle).toBe('La camiseta titular · 18 s');
     expect(result.pieces[1].blocks[0].title).toBe('0–4 s · Hook');
     expect(result.pieces[1].blocks[1].title).toBe('Texto para publicar');
+  });
+
+  it('avanza el cursor del teleprompter según las palabras habladas', () => {
+    const blocks = [
+      { id: '1', title: 'Gancho', text: 'Deja de esperar a sentirte listo para empezar.' },
+      { id: '2', title: 'Cierre', text: 'Guarda este video para mañana.' }
+    ];
+    const index = buildWordIndex(blocks);
+    const pos1 = findNextWordMatch(index, 0, 'deja de esperar');
+    expect(pos1).toBe(2);
+
+    const pos2 = findNextWordMatch(index, pos1, 'listo para empezar');
+    expect(pos2).toBe(7);
+
+    const pos3 = findNextWordMatch(index, pos2, 'guarda este video');
+    expect(pos3).toBe(10);
   });
 });
 
