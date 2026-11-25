@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, FileUp, FolderKanban, Home } from 'lucide-react';
+import { ArrowLeft, Cloud, CloudOff, FileUp, FolderKanban, Home, RefreshCw } from 'lucide-react';
+import {
+  subscribeToCloudSync,
+  syncAllWithCloud,
+  type SyncStatus
+} from './db/cloudSync';
 import {
   createId,
   deleteDocument,
@@ -57,6 +62,7 @@ export function App() {
     selectedIds: string[];
   } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -77,6 +83,28 @@ export function App() {
     setAllDocs(docList.sort((a, b) => b.updatedAt - a.updatedAt));
   }, []);
 
+  const runCloudSync = useCallback(
+    async (silent = true) => {
+      if (typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test') return;
+      setSyncStatus('syncing');
+      const res = await syncAllWithCloud();
+      setSyncStatus(res.status);
+      if (res.changed) {
+        await refreshAll();
+      }
+      if (!silent) {
+        if (res.status === 'synced') {
+          showToast('Sincronizado con la nube');
+        } else if (res.status === 'offline') {
+          showToast('Sin conexión — guardado localmente');
+        } else if (res.status === 'error') {
+          showToast('Ejecuta el SQL de guion_sync en Supabase para activar la nube');
+        }
+      }
+    },
+    [refreshAll, showToast]
+  );
+
   useEffect(() => {
     (async () => {
       await ensureSeedData();
@@ -94,6 +122,7 @@ export function App() {
             setView({ name: 'project', projectId: imported.id });
             setReady(true);
             showToast(`Proyecto "${imported.name}" importado en este dispositivo`);
+            void runCloudSync(true);
             return;
           }
         } catch {
@@ -102,8 +131,23 @@ export function App() {
       }
       await refreshAll();
       setReady(true);
+      void runCloudSync(true);
     })();
-  }, [refreshAll, showToast]);
+  }, [refreshAll, showToast, runCloudSync]);
+
+  useEffect(() => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test') return;
+    const unsub = subscribeToCloudSync(() => {
+      void refreshAll();
+      setSyncStatus('synced');
+    });
+    const onOnline = () => void runCloudSync(true);
+    window.addEventListener('online', onOnline);
+    return () => {
+      unsub();
+      window.removeEventListener('online', onOnline);
+    };
+  }, [refreshAll, runCloudSync]);
 
   const pieceCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -393,6 +437,30 @@ export function App() {
           <h1>{headerTitle}</h1>
           {headerSubtitle && <div className="top-bar-subtitle">{headerSubtitle}</div>}
         </div>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          style={{ minHeight: 36, padding: '4px 10px', fontSize: '0.78rem' }}
+          onClick={() => void runCloudSync(false)}
+          title="Sincronizar con Supabase"
+        >
+          {syncStatus === 'syncing' ? (
+            <RefreshCw size={14} />
+          ) : syncStatus === 'offline' ? (
+            <CloudOff size={14} color="#94a3b8" />
+          ) : (
+            <Cloud size={14} color={syncStatus === 'error' ? '#fbbf24' : '#34d399'} />
+          )}
+          <span>
+            {syncStatus === 'syncing'
+              ? 'Sincronizando'
+              : syncStatus === 'offline'
+              ? 'Local'
+              : syncStatus === 'error'
+              ? 'Pendiente SQL'
+              : 'Nube'}
+          </span>
+        </button>
       </header>
 
       <main style={{ flex: 1 }}>
