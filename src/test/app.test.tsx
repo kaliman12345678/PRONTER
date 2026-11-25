@@ -18,6 +18,7 @@ import { selectBlocksForTeleprompter } from '../utils/teleprompter';
 import { splitTextIntoBlocks } from '../utils/textSplitter';
 import { parsePastedScriptBatch } from '../utils/batchScriptParser';
 import { buildWordIndex, findNextWordMatch } from '../utils/voiceTracker';
+import { decodeProjectShareHash, encodeProjectShareUrl } from '../utils/projectShare';
 import { parseReferenceVideoUrl } from '../utils/videoEmbed';
 import { App } from '../App';
 
@@ -170,6 +171,33 @@ describe('Guion en Pantalla - Lógica y Datos', () => {
 
     const pos3 = findNextWordMatch(index, pos2, 'guarda este video');
     expect(pos3).toBe(10);
+  });
+
+  it('codifica y decodifica un proyecto completo en un enlace #share=', async () => {
+    const payload = {
+      v: 1 as const,
+      project: { id: 'p1', name: 'NOXA', createdAt: 1, updatedAt: 1 },
+      pieces: [{ id: 'pc1', projectId: 'p1', title: 'Dos pintas', createdAt: 1, updatedAt: 1 }],
+      documents: [
+        {
+          id: 'd1',
+          pieceId: 'pc1',
+          title: 'Guion final',
+          type: 'Guion' as const,
+          blocks: [{ id: 'b1', title: '0-4 s', text: 'Hola', cues: 'Plano medio' }],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ]
+    };
+
+    const url = await encodeProjectShareUrl(payload, 'https://kaliman12345678.github.io/PRONTER/');
+    const hash = url.slice(url.indexOf('#'));
+    const decoded = await decodeProjectShareHash(hash);
+
+    expect(decoded?.project.name).toBe('NOXA');
+    expect(decoded?.pieces[0].title).toBe('Dos pintas');
+    expect(decoded?.documents[0].blocks[0].cues).toBe('Plano medio');
   });
 });
 

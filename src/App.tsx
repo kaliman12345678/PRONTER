@@ -30,6 +30,14 @@ import type {
 import { splitTextIntoBlocks } from './utils/textSplitter';
 import { selectBlocksForTeleprompter } from './utils/teleprompter';
 import type { ParsedBatchPiece } from './utils/batchScriptParser';
+import { copyToClipboard } from './utils/clipboard';
+import {
+  buildProjectSharePayload,
+  decodeProjectShareHash,
+  encodeProjectShareUrl,
+  importSharedProjectPayload,
+  type SharedProjectPayload
+} from './utils/projectShare';
 
 type ViewState =
   | { name: 'home' }
@@ -73,10 +81,30 @@ export function App() {
   useEffect(() => {
     (async () => {
       await ensureSeedData();
+      if (typeof window !== 'undefined' && window.location.hash.startsWith('#share=')) {
+        try {
+          const payload = await decodeProjectShareHash(window.location.hash);
+          if (payload) {
+            const imported = await importSharedProjectPayload(payload);
+            window.history.replaceState(
+              null,
+              '',
+              window.location.pathname + window.location.search
+            );
+            await refreshAll();
+            setView({ name: 'project', projectId: imported.id });
+            setReady(true);
+            showToast(`Proyecto "${imported.name}" importado en este dispositivo`);
+            return;
+          }
+        } catch {
+          showToast('No se pudo leer el enlace compartido');
+        }
+      }
       await refreshAll();
       setReady(true);
     })();
-  }, [refreshAll]);
+  }, [refreshAll, showToast]);
 
   const pieceCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -257,6 +285,50 @@ export function App() {
     setView({ name: 'piece', pieceId });
   };
 
+  const handleShareProjectLink = async (projectId: string) => {
+    const payload = await buildProjectSharePayload(projectId);
+    if (!payload) return;
+    const shareUrl = await encodeProjectShareUrl(payload, window.location.href);
+    const ok = await copyToClipboard(shareUrl);
+    showToast(
+      ok
+        ? 'Enlace copiado. Ábrelo en tu celular para cargar el proyecto'
+        : 'No se pudo copiar el enlace'
+    );
+  };
+
+  const handleDownloadProjectJson = async (projectId: string) => {
+    const payload = await buildProjectSharePayload(projectId);
+    if (!payload) return;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${payload.project.name.toLowerCase().replace(/\s+/g, '-')}-guiones.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Respaldo .json descargado');
+  };
+
+  const handleImportProjectJson = async (file: File) => {
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text) as SharedProjectPayload;
+      if (!payload || payload.v !== 1 || !payload.project) {
+        showToast('Archivo .json no válido');
+        return;
+      }
+      const imported = await importSharedProjectPayload(payload);
+      await refreshAll();
+      setView({ name: 'project', projectId: imported.id });
+      showToast(`Proyecto "${imported.name}" cargado`);
+    } catch {
+      showToast('No se pudo leer el archivo .json');
+    }
+  };
+
   if (!ready) {
     return (
       <div className="app-shell" style={{ justifyContent: 'center', alignItems: 'center' }}>
@@ -343,6 +415,7 @@ export function App() {
             }}
             onOpenProject={(projectId) => setView({ name: 'project', projectId })}
             onDeleteProject={handleDeleteProject}
+            onImportProjectJson={handleImportProjectJson}
           />
         )}
 
@@ -356,6 +429,8 @@ export function App() {
             }}
             onOpenPiece={(pieceId) => void handleOpenPiece(pieceId)}
             onDeletePiece={handleDeletePiece}
+            onShareProjectLink={handleShareProjectLink}
+            onDownloadProjectJson={handleDownloadProjectJson}
           />
         )}
 

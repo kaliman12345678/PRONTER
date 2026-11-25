@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronRight, Clapperboard, Plus, Trash2 } from 'lucide-react';
+import { ChevronRight, Clapperboard, Download, Plus, Share2, Trash2 } from 'lucide-react';
 import type { ContentPiece, Project } from '../types/models';
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   onCreatePiece: (title: string, referenceUrl: string) => Promise<void>;
   onOpenPiece: (pieceId: string) => void;
   onDeletePiece: (pieceId: string) => Promise<void>;
+  onShareProjectLink: (projectId: string) => Promise<void>;
+  onDownloadProjectJson: (projectId: string) => Promise<void>;
 }
 
 export function ProjectDetailPage({
@@ -17,7 +19,9 @@ export function ProjectDetailPage({
   docCounts,
   onCreatePiece,
   onOpenPiece,
-  onDeletePiece
+  onDeletePiece,
+  onShareProjectLink,
+  onDownloadProjectJson
 }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState('');
@@ -35,6 +39,27 @@ export function ProjectDetailPage({
   return (
     <div className="page-content">
       {project.description && <p className="muted" style={{ margin: 0 }}>{project.description}</p>}
+
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          style={{ flex: 1 }}
+          onClick={() => void onShareProjectLink(project.id)}
+        >
+          <Share2 size={16} color="#38bdf8" />
+          Copiar enlace para celular
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={() => void onDownloadProjectJson(project.id)}
+          title="Descargar respaldo .json"
+        >
+          <Download size={16} />
+          Respaldo .json
+        </button>
+      </div>
 
       <div className="row-between">
         <h2 className="section-title">Piezas de contenido</h2>

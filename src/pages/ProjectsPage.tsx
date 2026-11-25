@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronRight, FolderPlus, Trash2 } from 'lucide-react';
+import { ChevronRight, FolderPlus, Trash2, Upload } from 'lucide-react';
 import type { Project } from '../types/models';
 
 interface Props {
@@ -8,6 +8,7 @@ interface Props {
   onCreateProject: (name: string, description: string) => Promise<void>;
   onOpenProject: (projectId: string) => void;
   onDeleteProject: (projectId: string) => Promise<void>;
+  onImportProjectJson: (file: File) => Promise<void>;
 }
 
 export function ProjectsPage({
@@ -15,7 +16,8 @@ export function ProjectsPage({
   pieceCounts,
   onCreateProject,
   onOpenProject,
-  onDeleteProject
+  onDeleteProject,
+  onImportProjectJson
 }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
@@ -32,16 +34,32 @@ export function ProjectsPage({
 
   return (
     <div className="page-content">
-      <div className="row-between">
+      <div className="row-between" style={{ flexWrap: 'wrap', gap: 8 }}>
         <h2 className="section-title">Mis proyectos</h2>
-        <button
-          type="button"
-          className="btn btn-primary btn-sm"
-          onClick={() => setShowForm((v) => !v)}
-        >
-          <FolderPlus size={16} />
-          Nuevo proyecto
-        </button>
+        <div className="row" style={{ gap: 8 }}>
+          <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>
+            <Upload size={15} />
+            Cargar .json
+            <input
+              type="file"
+              accept=".json,application/json"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void onImportProjectJson(file);
+                e.target.value = '';
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => setShowForm((v) => !v)}
+          >
+            <FolderPlus size={16} />
+            Nuevo proyecto
+          </button>
+        </div>
       </div>
 
       {showForm && (
