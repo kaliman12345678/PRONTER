@@ -385,7 +385,15 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
               onClick={() => {
                 if (!isPlaying) {
                   const el = scrollRef.current;
-                  if (el && el.scrollHeight <= el.clientHeight + 2) {
+                  const lastBlock = blockRefs.current[blocks.length - 1];
+                  const fitsOnScreen =
+                    el &&
+                    lastBlock &&
+                    el.scrollTop <= 2 &&
+                    lastBlock.getBoundingClientRect().bottom -
+                      el.getBoundingClientRect().top <=
+                      el.clientHeight;
+                  if (fitsOnScreen) {
                     setScrollNotice('El texto ya cabe completo en pantalla');
                     return;
                   }
