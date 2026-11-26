@@ -12,6 +12,7 @@ export interface Project {
   id: string;
   name: string;
   description?: string;
+  ownerName?: string;
   createdAt: number;
   updatedAt: number;
 }

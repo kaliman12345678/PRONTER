@@ -1,10 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Cloud, CloudOff, FileUp, FolderKanban, Home, RefreshCw } from 'lucide-react';
+import {
+  ArrowLeft,
+  Cloud,
+  CloudOff,
+  FolderKanban,
+  Home,
+  Lightbulb,
+  RefreshCw,
+  Settings,
+  User,
+  Wand2
+} from 'lucide-react';
 import {
   subscribeToCloudSync,
   syncAllWithCloud,
   type SyncStatus
 } from './db/cloudSync';
+import {
+  createVotante,
+  fetchVotantes,
+  getStoredActiveUser,
+  setStoredActiveUser
+} from './db/reellabService';
+import { StoryboardPrintModal } from './components/StoryboardPrintModal';
+import { UserSelectorModal } from './components/UserSelectorModal';
 import {
   createId,
   deleteDocument,
@@ -21,17 +40,22 @@ import {
 import { ensureSeedData } from './db/seed';
 import { DocumentEditorPage } from './pages/DocumentEditorPage';
 import { HomePage } from './pages/HomePage';
+import { HooksCtaPage } from './pages/HooksCtaPage';
+import { IdeasPage } from './pages/IdeasPage';
 import { ImportPage } from './pages/ImportPage';
 import { PieceDetailPage } from './pages/PieceDetailPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { ProjectsPage } from './pages/ProjectsPage';
+import { ReelLabSettingsPage } from './pages/ReelLabSettingsPage';
 import { TeleprompterPage } from './pages/TeleprompterPage';
 import type {
   ContentPiece,
   DocumentType,
   Project,
+  ScriptBlock,
   ScriptDocument
 } from './types/models';
+import type { GuionResumen, Votante } from './types/reellab';
 import { splitTextIntoBlocks } from './utils/textSplitter';
 import { selectBlocksForTeleprompter } from './utils/teleprompter';
 import type { ParsedBatchPiece } from './utils/batchScriptParser';
@@ -45,6 +69,9 @@ import {
 
 type ViewState =
   | { name: 'home' }
+  | { name: 'ideas' }
+  | { name: 'hooks' }
+  | { name: 'settings' }
   | { name: 'projects' }
   | { name: 'project'; projectId: string }
   | { name: 'piece'; pieceId: string }
@@ -58,11 +85,20 @@ export function App() {
   const [pieces, setPieces] = useState<ContentPiece[]>([]);
   const [allDocs, setAllDocs] = useState<ScriptDocument[]>([]);
   const [teleprompterState, setTeleprompterState] = useState<{
-    docId: string;
-    selectedIds: string[];
+    docId?: string;
+    selectedIds?: string[];
+    customTitle?: string;
+    customBlocks?: ScriptBlock[];
   } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
+
+  // ReelLab team user & storyboard state
+  const [users, setUsers] = useState<Votante[]>([]);
+  const [activeUser, setActiveUser] = useState<Votante | null>(() => getStoredActiveUser());
+  const [schemaMissing, setSchemaMissing] = useState(false);
+  const [showUserModal, setShowUserModal] = useState(false);
+  const [storyboardGuion, setStoryboardGuion] = useState<GuionResumen | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -135,8 +171,19 @@ export function App() {
     })();
   }, [refreshAll, showToast, runCloudSync]);
 
+  const loadUsers = useCallback(async () => {
+    if (typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test') return;
+    const res = await fetchVotantes();
+    setSchemaMissing(res.schemaMissing);
+    setUsers(res.users);
+    if (!res.schemaMissing && res.users.length > 0 && !getStoredActiveUser()) {
+      setShowUserModal(true);
+    }
+  }, []);
+
   useEffect(() => {
     if (typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test') return;
+    void loadUsers();
     const unsub = subscribeToCloudSync(() => {
       void refreshAll();
       setSyncStatus('synced');
@@ -147,7 +194,7 @@ export function App() {
       unsub();
       window.removeEventListener('online', onOnline);
     };
-  }, [refreshAll, runCloudSync]);
+  }, [refreshAll, runCloudSync, loadUsers]);
 
   const pieceCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -206,18 +253,29 @@ export function App() {
     }
   };
 
-  const handleCreateProject = async (name: string, description = '') => {
+  const handleCreateProject = async (
+    name: string,
+    description = '',
+    ownerName = activeUser?.nombre || ''
+  ) => {
     const now = Date.now();
     const created = await saveProject({
       id: createId('proj'),
       name,
       description: description || undefined,
+      ownerName: ownerName || undefined,
       createdAt: now,
       updatedAt: now
     });
     await refreshAll();
     showToast(`Proyecto "${created.name}" creado`);
     return created;
+  };
+
+  const handleUpdateProject = async (project: Project) => {
+    await saveProject(project);
+    await refreshAll();
+    showToast('Proyecto actualizado');
   };
 
   const handleDeleteProject = async (projectId: string) => {
@@ -384,11 +442,20 @@ export function App() {
 
   // Teleprompter fullscreen overlay
   if (teleprompterState) {
+    if (teleprompterState.customBlocks && teleprompterState.customTitle) {
+      return (
+        <TeleprompterPage
+          documentTitle={teleprompterState.customTitle}
+          blocks={teleprompterState.customBlocks}
+          onExit={() => setTeleprompterState(null)}
+        />
+      );
+    }
     const doc = allDocs.find((d) => d.id === teleprompterState.docId);
     if (doc) {
       const selectedBlocks = selectBlocksForTeleprompter(
         doc.blocks,
-        teleprompterState.selectedIds
+        teleprompterState.selectedIds || []
       );
       return (
         <TeleprompterPage
@@ -406,6 +473,14 @@ export function App() {
 
   if (view.name === 'projects') {
     headerTitle = 'Mis proyectos';
+  } else if (view.name === 'ideas') {
+    headerTitle = 'Banco de Ideas';
+    headerSubtitle = 'Votos, viralidad y guiones';
+  } else if (view.name === 'hooks') {
+    headerTitle = 'Ganchos y CTA';
+    headerSubtitle = '49 tipos, banco y palabras clave';
+  } else if (view.name === 'settings') {
+    headerTitle = 'Ajustes y Equipo';
   } else if (view.name === 'project' && activeProject) {
     headerTitle = activeProject.name;
     headerSubtitle = 'Proyecto';
@@ -441,6 +516,18 @@ export function App() {
           type="button"
           className="btn btn-secondary btn-sm"
           style={{ minHeight: 36, padding: '4px 10px', fontSize: '0.78rem' }}
+          onClick={() => setShowUserModal(true)}
+          title="Cambiar o crear usuario"
+        >
+          <User size={14} color="#38bdf8" />
+          <span style={{ maxWidth: 84, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {activeUser ? activeUser.nombre : 'Usuario'}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          style={{ minHeight: 36, padding: '4px 10px', fontSize: '0.78rem' }}
           onClick={() => void runCloudSync(false)}
           title="Sincronizar con Supabase"
         >
@@ -471,7 +558,49 @@ export function App() {
             onGoProjects={() => setView({ name: 'projects' })}
             onGoImport={() => setView({ name: 'import', mode: 'pick' })}
             onGoPasteText={() => setView({ name: 'import', mode: 'paste' })}
+            onGoIdeas={() => setView({ name: 'ideas' })}
+            onGoHooks={() => setView({ name: 'hooks' })}
             onOpenPiece={(pieceId) => void handleOpenPiece(pieceId)}
+          />
+        )}
+
+        {view.name === 'ideas' && (
+          <IdeasPage
+            activeUser={activeUser}
+            schemaMissing={schemaMissing}
+            onOpenStoryboard={(g) => setStoryboardGuion(g)}
+            onNotify={showToast}
+          />
+        )}
+
+        {view.name === 'hooks' && (
+          <HooksCtaPage
+            activeUser={activeUser}
+            schemaMissing={schemaMissing}
+            onNotify={showToast}
+          />
+        )}
+
+        {view.name === 'settings' && (
+          <ReelLabSettingsPage
+            users={users}
+            activeUser={activeUser}
+            schemaMissing={schemaMissing}
+            onSelectUser={(u) => {
+              setActiveUser(u);
+              setStoredActiveUser(u);
+              showToast(`Usuario activo: ${u.nombre}`);
+            }}
+            onCreateUser={async (name) => {
+              const created = await createVotante(name);
+              if (created) {
+                setActiveUser(created);
+                setStoredActiveUser(created);
+                await loadUsers();
+              }
+            }}
+            onRefreshUsers={loadUsers}
+            onNotify={showToast}
           />
         )}
 
@@ -479,8 +608,9 @@ export function App() {
           <ProjectsPage
             projects={projects}
             pieceCounts={pieceCounts}
-            onCreateProject={async (name, desc) => {
-              await handleCreateProject(name, desc);
+            activeUserName={activeUser?.nombre}
+            onCreateProject={async (name, desc, owner) => {
+              await handleCreateProject(name, desc, owner);
             }}
             onOpenProject={(projectId) => setView({ name: 'project', projectId })}
             onDeleteProject={handleDeleteProject}
@@ -493,6 +623,8 @@ export function App() {
             project={activeProject}
             pieces={pieces.filter((p) => p.projectId === activeProject.id)}
             docCounts={docCounts}
+            activeUserName={activeUser?.nombre}
+            onUpdateProject={handleUpdateProject}
             onCreatePiece={async (title, refUrl) => {
               await handleCreatePiece(activeProject.id, title, refUrl);
             }}
@@ -582,6 +714,44 @@ export function App() {
         )}
       </main>
 
+      {storyboardGuion && (
+        <StoryboardPrintModal
+          guion={storyboardGuion}
+          onClose={() => setStoryboardGuion(null)}
+          onOpenTeleprompter={(title, blocks) => {
+            setTeleprompterState({ customTitle: title, customBlocks: blocks });
+          }}
+          onNotify={showToast}
+          onUpdated={async () => {}}
+        />
+      )}
+
+      {showUserModal && (
+        <UserSelectorModal
+          users={users}
+          activeUser={activeUser}
+          schemaMissing={schemaMissing}
+          canClose={Boolean(activeUser) || schemaMissing || users.length === 0}
+          onSelectUser={(u) => {
+            setActiveUser(u);
+            setStoredActiveUser(u);
+            setShowUserModal(false);
+            showToast(`Hola, ${u.nombre}`);
+          }}
+          onCreateUser={async (name) => {
+            const created = await createVotante(name);
+            if (created) {
+              setActiveUser(created);
+              setStoredActiveUser(created);
+              await loadUsers();
+              setShowUserModal(false);
+              showToast(`Usuario "${created.nombre}" creado`);
+            }
+          }}
+          onClose={() => setShowUserModal(false)}
+        />
+      )}
+
       {toast && <div className="toast-banner">{toast}</div>}
 
       <nav className="bottom-nav" aria-label="Navegación principal">
@@ -591,8 +761,16 @@ export function App() {
             className={`nav-item ${view.name === 'home' ? 'active' : ''}`}
             onClick={() => setView({ name: 'home' })}
           >
-            <Home size={22} />
+            <Home size={20} />
             <span>Inicio</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-item ${view.name === 'ideas' ? 'active' : ''}`}
+            onClick={() => setView({ name: 'ideas' })}
+          >
+            <Lightbulb size={20} />
+            <span>Ideas</span>
           </button>
           <button
             type="button"
@@ -606,16 +784,24 @@ export function App() {
             }`}
             onClick={() => setView({ name: 'projects' })}
           >
-            <FolderKanban size={22} />
-            <span>Mis proyectos</span>
+            <FolderKanban size={20} />
+            <span>Proyectos</span>
           </button>
           <button
             type="button"
-            className={`nav-item ${view.name === 'import' ? 'active' : ''}`}
-            onClick={() => setView({ name: 'import' })}
+            className={`nav-item ${view.name === 'hooks' ? 'active' : ''}`}
+            onClick={() => setView({ name: 'hooks' })}
           >
-            <FileUp size={22} />
-            <span>Importar</span>
+            <Wand2 size={20} />
+            <span>Ganchos</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-item ${view.name === 'settings' ? 'active' : ''}`}
+            onClick={() => setView({ name: 'settings' })}
+          >
+            <Settings size={20} />
+            <span>Ajustes</span>
           </button>
         </div>
       </nav>

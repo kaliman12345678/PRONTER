@@ -19,6 +19,7 @@ import { splitTextIntoBlocks } from '../utils/textSplitter';
 import { parsePastedScriptBatch } from '../utils/batchScriptParser';
 import { buildWordIndex, findNextWordMatch } from '../utils/voiceTracker';
 import { decodeProjectShareHash, encodeProjectShareUrl } from '../utils/projectShare';
+import { convertBloquesToTeleprompter, estimateWordStats } from '../db/reellabService';
 import { parseReferenceVideoUrl } from '../utils/videoEmbed';
 import { App } from '../App';
 
@@ -198,6 +199,49 @@ describe('Guion en Pantalla - Lógica y Datos', () => {
     expect(decoded?.project.name).toBe('NOXA');
     expect(decoded?.pieces[0].title).toBe('Dos pintas');
     expect(decoded?.documents[0].blocks[0].cues).toBe('Plano medio');
+  });
+
+  it('convierte escenas de ReelLab a bloques del teleprompter y estima palabras/duración', () => {
+    const escenas = [
+      {
+        id: 1,
+        guion_id: 1,
+        orden: 1,
+        tipo: 'gancho' as const,
+        inicio_s: 0,
+        fin_s: 4,
+        dialogo: 'Tres errores al empacar un pedido.',
+        texto_pantalla: '3 ERRORES',
+        plano: 'Medio corto',
+        camara: 'Estática',
+        edicion: [],
+        grabado: false,
+        exportado: false
+      },
+      {
+        id: 2,
+        guion_id: 1,
+        orden: 2,
+        tipo: 'cta' as const,
+        inicio_s: 4,
+        fin_s: 8,
+        dialogo: 'Guarda este video.',
+        texto_pantalla: '',
+        edicion: [],
+        grabado: false,
+        exportado: false
+      }
+    ];
+
+    const stats = estimateWordStats(escenas);
+    expect(stats.words).toBe(9);
+    expect(stats.seconds).toBe(3);
+
+    const tpBlocks = convertBloquesToTeleprompter(escenas);
+    expect(tpBlocks).toHaveLength(2);
+    expect(tpBlocks[0].title).toBe('0–4 s · Gancho');
+    expect(tpBlocks[0].cues).toContain('Plano: Medio corto');
+    expect(tpBlocks[1].text).toBe('Guarda este video.');
   });
 });
 

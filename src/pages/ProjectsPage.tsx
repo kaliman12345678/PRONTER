@@ -1,11 +1,12 @@
-import { useState } from 'react';
-import { ChevronRight, FolderPlus, Trash2, Upload } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ChevronRight, FolderPlus, Trash2, Upload, User } from 'lucide-react';
 import type { Project } from '../types/models';
 
 interface Props {
   projects: Project[];
   pieceCounts: Record<string, number>;
-  onCreateProject: (name: string, description: string) => Promise<void>;
+  activeUserName?: string;
+  onCreateProject: (name: string, description: string, ownerName: string) => Promise<void>;
   onOpenProject: (projectId: string) => void;
   onDeleteProject: (projectId: string) => Promise<void>;
   onImportProjectJson: (file: File) => Promise<void>;
@@ -14,6 +15,7 @@ interface Props {
 export function ProjectsPage({
   projects,
   pieceCounts,
+  activeUserName = '',
   onCreateProject,
   onOpenProject,
   onDeleteProject,
@@ -22,13 +24,21 @@ export function ProjectsPage({
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [ownerName, setOwnerName] = useState(activeUserName);
+
+  useEffect(() => {
+    if (!ownerName && activeUserName) {
+      setOwnerName(activeUserName);
+    }
+  }, [activeUserName]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-    await onCreateProject(name.trim(), description.trim());
+    await onCreateProject(name.trim(), description.trim(), ownerName.trim());
     setName('');
     setDescription('');
+    setOwnerName(activeUserName);
     setShowForm(false);
   };
 
@@ -86,6 +96,16 @@ export function ProjectsPage({
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
+          <div className="field">
+            <label htmlFor="proj-owner">Responsable del proyecto</label>
+            <input
+              id="proj-owner"
+              className="input"
+              placeholder="Ej. Tu nombre"
+              value={ownerName}
+              onChange={(e) => setOwnerName(e.target.value)}
+            />
+          </div>
           <div className="row">
             <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>
               Crear proyecto
@@ -129,9 +149,17 @@ export function ProjectsPage({
                         {project.description}
                       </span>
                     )}
-                    <span className="badge" style={{ marginTop: 8 }}>
-                      {count} {count === 1 ? 'pieza de contenido' : 'piezas de contenido'}
-                    </span>
+                    <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                      <span className="badge">
+                        {count} {count === 1 ? 'pieza de contenido' : 'piezas de contenido'}
+                      </span>
+                      {project.ownerName && (
+                        <span className="badge estructura">
+                          <User size={12} />
+                          {project.ownerName}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <ChevronRight size={20} color="#94a3b8" />
                 </button>

@@ -1,5 +1,17 @@
 import { useState } from 'react';
-import { ChevronRight, Clapperboard, Copy, Download, Plus, Share2, Trash2, X } from 'lucide-react';
+import {
+  ChevronRight,
+  Clapperboard,
+  Copy,
+  Download,
+  Edit3,
+  Plus,
+  Save,
+  Share2,
+  Trash2,
+  User,
+  X
+} from 'lucide-react';
 import type { ContentPiece, Project } from '../types/models';
 import { copyToClipboard } from '../utils/clipboard';
 
@@ -7,6 +19,8 @@ interface Props {
   project: Project;
   pieces: ContentPiece[];
   docCounts: Record<string, number>;
+  activeUserName?: string;
+  onUpdateProject: (project: Project) => Promise<void>;
   onCreatePiece: (title: string, referenceUrl: string) => Promise<void>;
   onOpenPiece: (pieceId: string) => void;
   onDeletePiece: (pieceId: string) => Promise<void>;
@@ -19,6 +33,8 @@ export function ProjectDetailPage({
   project,
   pieces,
   docCounts,
+  activeUserName = '',
+  onUpdateProject,
   onCreatePiece,
   onOpenPiece,
   onDeletePiece,
@@ -31,6 +47,11 @@ export function ProjectDetailPage({
   const [referenceUrl, setReferenceUrl] = useState('');
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [generatingLink, setGeneratingLink] = useState(false);
+
+  const [editingProject, setEditingProject] = useState(false);
+  const [editName, setEditName] = useState(project.name);
+  const [editDesc, setEditDesc] = useState(project.description || '');
+  const [editOwner, setEditOwner] = useState(project.ownerName || '');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,9 +78,115 @@ export function ProjectDetailPage({
     }
   };
 
+  const handleSaveProjectMeta = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editName.trim()) return;
+    await onUpdateProject({
+      ...project,
+      name: editName.trim(),
+      description: editDesc.trim() || undefined,
+      ownerName: editOwner.trim() || undefined,
+      updatedAt: Date.now()
+    });
+    setEditingProject(false);
+  };
+
   return (
     <div className="page-content">
-      {project.description && <p className="muted" style={{ margin: 0 }}>{project.description}</p>}
+      <div className="row-between" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+          {project.ownerName ? (
+            <span className="badge estructura">
+              <User size={13} />
+              Responsable: {project.ownerName}
+            </span>
+          ) : (
+            <span className="muted">Sin responsable asignado</span>
+          )}
+        </div>
+        <div className="row" style={{ gap: 6 }}>
+          {activeUserName && project.ownerName !== activeUserName && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() =>
+                void onUpdateProject({
+                  ...project,
+                  ownerName: activeUserName,
+                  updatedAt: Date.now()
+                })
+              }
+            >
+              <User size={14} />
+              Asignarme
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => {
+              setEditName(project.name);
+              setEditDesc(project.description || '');
+              setEditOwner(project.ownerName || '');
+              setEditingProject((v) => !v);
+            }}
+          >
+            <Edit3 size={14} />
+            Editar
+          </button>
+        </div>
+      </div>
+
+      {project.description && !editingProject && (
+        <p className="muted" style={{ margin: 0 }}>{project.description}</p>
+      )}
+
+      {editingProject && (
+        <form onSubmit={handleSaveProjectMeta} className="card">
+          <div className="field">
+            <label htmlFor="edit-proj-name">Nombre del proyecto</label>
+            <input
+              id="edit-proj-name"
+              className="input"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="edit-proj-desc">Descripción (opcional)</label>
+            <input
+              id="edit-proj-desc"
+              className="input"
+              value={editDesc}
+              onChange={(e) => setEditDesc(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="edit-proj-owner">Responsable</label>
+            <input
+              id="edit-proj-owner"
+              className="input"
+              value={editOwner}
+              onChange={(e) => setEditOwner(e.target.value)}
+              placeholder="Nombre del responsable"
+            />
+          </div>
+          <div className="row">
+            <button type="submit" className="btn btn-primary btn-sm" style={{ flex: 1 }}>
+              <Save size={15} />
+              Guardar proyecto
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setEditingProject(false)}
+            >
+              Cancelar
+            </button>
+          </div>
+        </form>
+      )}
 
       <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
         <button

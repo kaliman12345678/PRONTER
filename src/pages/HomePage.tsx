@@ -1,4 +1,13 @@
-import { ChevronRight, ClipboardPaste, FileUp, FolderKanban, Sparkles, WifiOff } from 'lucide-react';
+import {
+  ChevronRight,
+  ClipboardPaste,
+  FileUp,
+  FolderKanban,
+  Lightbulb,
+  Sparkles,
+  Wand2,
+  WifiOff
+} from 'lucide-react';
 import type { ContentPiece, Project } from '../types/models';
 
 interface Props {
@@ -7,6 +16,8 @@ interface Props {
   onGoProjects: () => void;
   onGoImport: () => void;
   onGoPasteText: () => void;
+  onGoIdeas: () => void;
+  onGoHooks: () => void;
   onOpenPiece: (pieceId: string) => void;
 }
 
@@ -16,6 +27,8 @@ export function HomePage({
   onGoProjects,
   onGoImport,
   onGoPasteText,
+  onGoIdeas,
+  onGoHooks,
   onOpenPiece
 }: Props) {
   const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
@@ -43,6 +56,27 @@ export function HomePage({
         <ClipboardPaste size={20} color="#38bdf8" />
         Pegar texto rápido desde el celular
       </button>
+
+      <div className="row" style={{ gap: 10 }}>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ flex: 1 }}
+          onClick={onGoIdeas}
+        >
+          <Lightbulb size={18} color="#fbbf24" />
+          Banco de Ideas
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ flex: 1 }}
+          onClick={onGoHooks}
+        >
+          <Wand2 size={18} color="#34d399" />
+          49 Ganchos y CTA
+        </button>
+      </div>
 
       {recentPieces.length > 0 && (
         <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
