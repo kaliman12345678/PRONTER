@@ -83,6 +83,17 @@ export async function toggleVotanteActivo(id: number, activo: boolean): Promise<
   if (error) throw new Error(error.message);
 }
 
+export async function deleteVotante(id: number): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const { error: votoErr } = await client.from('voto').delete().eq('votante_id', id);
+  if (votoErr) throw new Error(votoErr.message);
+  const { error: vpErr } = await client.from('voto_pieza').delete().eq('votante_id', id);
+  if (vpErr) throw new Error(vpErr.message);
+  const { error } = await client.from('votante').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
 export async function fetchCatalogos(): Promise<CatalogoItem[]> {
   const client = getSupabaseClient();
   if (!client) return [];
@@ -469,6 +480,19 @@ export async function savePiezaVoto(
   if (error) throw new Error(error.message);
 }
 
+export async function deletePiezaGanchoCta(id: number): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const { error: gErr } = await client.from('guion').update({ gancho_id: null }).eq('gancho_id', id);
+  if (gErr) throw new Error(gErr.message);
+  const { error: cErr } = await client.from('guion').update({ cta_id: null }).eq('cta_id', id);
+  if (cErr) throw new Error(cErr.message);
+  const { error: vpErr } = await client.from('voto_pieza').delete().eq('pieza_id', id);
+  if (vpErr) throw new Error(vpErr.message);
+  const { error } = await client.from('pieza').delete().eq('id', id);
+  if (error) throw new Error(error.message);
+}
+
 export async function fetchPalabrasClave(): Promise<PalabraClave[]> {
   const client = getSupabaseClient();
   if (!client) return [];
@@ -492,6 +516,18 @@ export async function createPalabraClave(input: {
     recurso: input.recurso?.trim() || null,
     variantes: input.variantes?.trim() || null
   });
+  if (error) throw new Error(error.message);
+}
+
+export async function deletePalabraClave(id: number): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const { error: pErr } = await client
+    .from('pieza')
+    .update({ palabra_clave_id: null })
+    .eq('palabra_clave_id', id);
+  if (pErr) throw new Error(pErr.message);
+  const { error } = await client.from('palabra_clave').delete().eq('id', id);
   if (error) throw new Error(error.message);
 }
 

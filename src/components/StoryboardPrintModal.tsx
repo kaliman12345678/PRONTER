@@ -299,6 +299,22 @@ export function StoryboardPrintModal({
                     {b.sketch_texto && (
                       <div style={{ fontSize: '0.8rem', marginTop: 4 }}>{b.sketch_texto}</div>
                     )}
+                    <textarea
+                      className="input no-print"
+                      rows={2}
+                      style={{
+                        padding: '6px 10px',
+                        fontSize: '0.82rem',
+                        resize: 'vertical',
+                        marginTop: 6
+                      }}
+                      value={b.sketch_prompt || ''}
+                      placeholder="Prompt para generar sketch (IA)..."
+                      onChange={(e) =>
+                        handleUpdateLocal(b.id, { sketch_prompt: e.target.value })
+                      }
+                      onBlur={() => void handleSaveBloque(b)}
+                    />
                     <div className="row no-print" style={{ gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
                       <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>
                         <ImagePlus size={14} />

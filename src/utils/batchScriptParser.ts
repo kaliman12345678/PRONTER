@@ -22,6 +22,138 @@ export interface BatchParseResult {
 const REFERENCE_LINE_RE = /^REFERENCIA\s+\d+[^\n]*/i;
 const TABLE_HEADER_RE = /^(tiempo|escena|bloque|parte)\t+(plano|acci[oó]n|indicaci)/i;
 const URL_RE = /https?:\/\/\S+/i;
+const TIMESTAMP_PREFIX_RE = /^\[?(\d{1,2}:\d{2}(?:\s*[-–]\s*\d{1,2}:\d{2})?)\]?(?:\s*[:\-–·]\s*|\s+|$)/;
+const CUE_LABEL_RE = /^(plano|c[aá]mara|acci[oó]n|indicaci[oó]n|indicaciones|texto\s+en\s+pantalla|en\s+pantalla|nota)\s*:\s*(.+)$/i;
+const BRACKET_CUE_RE = /\[([^\]]+)\]/g;
+const PAREN_CUE_RE = /\(((?:plano|c[aá]mara|camara|pausa|acci[oó]n|accion|indicaci[oó]n|indicacion|en\s+pantalla|voz|m[uú]sica|musica|sonido|sfx|b-roll)[^)]*)\)/gi;
+
+function extractTablessBlockMetadata(rawLines: string[]): {
+  title?: string;
+  cues?: string;
+  referenceUrl?: string;
+  text: string;
+} {
+  let title: string | undefined;
+  let referenceUrl: string | undefined;
+  const cueParts: string[] = [];
+  const textLines: string[] = [];
+
+  for (const rawLine of rawLines) {
+    let line = rawLine.trim();
+    if (!line) continue;
+
+    // Extract URL if present
+    const urlMatch = line.match(URL_RE);
+    if (urlMatch) {
+      if (!referenceUrl) referenceUrl = urlMatch[0];
+      line = line.replace(URL_RE, '').trim();
+      if (!line) continue;
+    }
+
+    // Extract leading timestamp (e.g. 00:00 - 00:05)
+    const tsMatch = line.match(TIMESTAMP_PREFIX_RE);
+    if (tsMatch) {
+      const ts = tsMatch[1].replace(/\s+/g, ' ').trim();
+      if (!title) title = ts;
+      else cueParts.push(ts);
+      line = line.slice(tsMatch[0].length).trim();
+      if (!line) continue;
+    }
+
+    // Extract explicit cue labels (Plano: ..., Cámara: ..., etc.)
+    const cueLabelMatch = line.match(CUE_LABEL_RE);
+    if (cueLabelMatch) {
+      cueParts.push(`${cueLabelMatch[1].trim()}: ${cueLabelMatch[2].trim()}`);
+      continue;
+    }
+
+    // Extract [bracketed] and known (parenthesized) cues inline
+    line = line
+      .replace(BRACKET_CUE_RE, (_m, inner: string) => {
+        const cleaned = inner.trim();
+        if (cleaned) cueParts.push(cleaned);
+        return '';
+      })
+      .replace(PAREN_CUE_RE, (_m, inner: string) => {
+        const cleaned = inner.trim();
+        if (cleaned) cueParts.push(cleaned);
+        return '';
+      })
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    if (line) {
+      textLines.push(cleanGuillemets(line));
+    }
+  }
+
+  return {
+    title,
+    cues: cueParts.length > 0 ? cueParts.join(' · ') : undefined,
+    referenceUrl,
+    text: textLines.join('\n').trim()
+  };
+}
+
+function parseTablessLinesToBlocks(rawLines: string[]): {
+  blocks: ScriptBlock[];
+  referenceUrl?: string;
+} {
+  const joined = rawLines.join('\n').trim();
+  if (!joined) return { blocks: [] };
+
+  let detectedUrl: string | undefined;
+
+  // If lines start with timestamps, group into blocks by timestamp
+  const hasTimestampRows = rawLines.some((l) => TIMESTAMP_PREFIX_RE.test(l.trim()));
+  if (hasTimestampRows) {
+    const groups: string[][] = [];
+    for (const raw of rawLines) {
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      if (TIMESTAMP_PREFIX_RE.test(trimmed) || groups.length === 0) {
+        groups.push([trimmed]);
+      } else {
+        groups[groups.length - 1].push(trimmed);
+      }
+    }
+
+    const blocks: ScriptBlock[] = [];
+    for (const grp of groups) {
+      const meta = extractTablessBlockMetadata(grp);
+      if (meta.referenceUrl && !detectedUrl) detectedUrl = meta.referenceUrl;
+      if (meta.text || meta.cues) {
+        blocks.push({
+          id: createId('blk'),
+          title: meta.title || `Bloque ${blocks.length + 1}`,
+          text: meta.text,
+          cues: meta.cues
+        });
+      }
+    }
+    if (blocks.length > 0) {
+      return { blocks, referenceUrl: detectedUrl };
+    }
+  }
+
+  // Otherwise split via textSplitter and enrich each block with cues/URL extraction
+  const split = splitTextIntoBlocks(joined);
+  const blocks: ScriptBlock[] = [];
+  for (const blk of split.blocks) {
+    const meta = extractTablessBlockMetadata(blk.text.split('\n'));
+    if (meta.referenceUrl && !detectedUrl) detectedUrl = meta.referenceUrl;
+    if (meta.text || meta.cues || blk.title) {
+      blocks.push({
+        id: blk.id,
+        title: blk.title || meta.title || `Bloque ${blocks.length + 1}`,
+        text: meta.text,
+        cues: meta.cues || blk.cues
+      });
+    }
+  }
+
+  return { blocks, referenceUrl: detectedUrl };
+}
 
 function cleanGuillemets(raw: string): string {
   const trimmed = raw.trim();
@@ -125,6 +257,33 @@ function parseSingleReferenceSection(
     }
   }
 
+  // Fallback for tabless REFERENCIA sections (e.g., pasted from WhatsApp or Notas)
+  if (blocks.length === 0) {
+    const remaining = nonEmpty.slice(tableStartIdx);
+    const bodyLines: string[] = [];
+    for (const raw of remaining) {
+      const trimmed = raw.trim();
+      const projMatch = trimmed.match(/^(?:guion|libreto|estructura)\s+(.+)$/i);
+      if (!suggestedProject && projMatch && bodyLines.length === 0) {
+        suggestedProject = projMatch[1].trim();
+        docTitle = trimmed;
+        continue;
+      }
+      if (!referenceUrl && URL_RE.test(trimmed) && trimmed.replace(URL_RE, '').trim() === '') {
+        const m = trimmed.match(URL_RE);
+        if (m) referenceUrl = m[0];
+        continue;
+      }
+      bodyLines.push(raw);
+    }
+
+    const tabless = parseTablessLinesToBlocks(bodyLines);
+    if (!referenceUrl && tabless.referenceUrl) {
+      referenceUrl = tabless.referenceUrl;
+    }
+    blocks.push(...tabless.blocks);
+  }
+
   if (blocks.length === 0) return null;
 
   return {
@@ -212,8 +371,8 @@ export function parsePastedScriptBatch(rawText: string): BatchParseResult {
     }
   }
 
-  // Case 3: Plain text fallback
-  const split = splitTextIntoBlocks(normalized);
+  // Case 3: Plain text fallback (with timestamp/cue/URL extraction for WhatsApp/Notas)
+  const tabless = parseTablessLinesToBlocks(lines);
   return {
     mode: 'plain-text',
     pieces: [
@@ -221,9 +380,10 @@ export function parsePastedScriptBatch(rawText: string): BatchParseResult {
         id: createId('piece-draft'),
         referenceLabel: 'Texto pegado',
         pieceTitle: 'Nueva pieza',
+        referenceUrl: tabless.referenceUrl,
         docTitle: 'Guion pegado',
         docType: 'Guion',
-        blocks: split.blocks,
+        blocks: tabless.blocks,
         selected: true
       }
     ]

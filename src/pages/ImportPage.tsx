@@ -91,6 +91,7 @@ export function ImportPage({
   const [docTitle, setDocTitle] = useState(initialMode === 'paste' ? 'Guion pegado' : '');
   const [docType, setDocType] = useState<DocumentType>('Guion');
   const [blocks, setBlocks] = useState<ScriptBlock[]>([]);
+  const [detectedReferenceUrl, setDetectedReferenceUrl] = useState<string | null>(null);
 
   const [targetProjectId, setTargetProjectId] = useState<string>(
     initialProjectId || projects[0]?.id || '__new__'
@@ -248,6 +249,7 @@ export function ImportPage({
     }
 
     setBlocks(parsed.pieces[0].blocks);
+    setDetectedReferenceUrl(parsed.pieces[0].referenceUrl || null);
     if (parsed.mode === 'single-table') {
       setStatusMsg(
         `Se detectaron ${parsed.pieces[0].blocks.length} escenas con indicaciones y libreto.`
@@ -697,6 +699,18 @@ export function ImportPage({
           </div>
 
           <h3 className="section-title">Revisar y corregir bloques ({blocks.length})</h3>
+
+          {detectedReferenceUrl && (
+            <div className="alert success" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Link2 size={16} />
+              <span style={{ fontSize: '0.86rem', wordBreak: 'break-all' }}>
+                Enlace detectado:{' '}
+                <a href={detectedReferenceUrl} target="_blank" rel="noreferrer">
+                  {detectedReferenceUrl}
+                </a>
+              </span>
+            </div>
+          )}
 
           {blocks.map((block, index) => (
             <div key={block.id} className="card">

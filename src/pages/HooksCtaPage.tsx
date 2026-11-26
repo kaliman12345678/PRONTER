@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Copy, Hash, Plus, Sparkles, Star } from 'lucide-react';
+import { Copy, Hash, Plus, Sparkles, Star, Trash2 } from 'lucide-react';
 import {
   createPalabraClave,
   createPiezaGanchoCta,
+  deletePalabraClave,
+  deletePiezaGanchoCta,
   fetchGanchoTipos,
   fetchPalabrasClave,
   fetchPiezasGanchoCta,
@@ -109,6 +111,28 @@ export function HooksCtaPage({ activeUser, schemaMissing, onNotify }: Props) {
     setNewRecurso('');
     await loadAll();
     onNotify('Palabra clave agregada');
+  };
+
+  const handleDeletePieza = async (p: PiezaResumen) => {
+    if (!window.confirm(`¿Eliminar este ${p.clase} del banco?`)) return;
+    try {
+      await deletePiezaGanchoCta(p.id);
+      await loadAll();
+      onNotify('Elemento eliminado');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'No se pudo eliminar');
+    }
+  };
+
+  const handleDeleteKeyword = async (kw: PalabraClave) => {
+    if (!window.confirm(`¿Eliminar la palabra clave "${kw.palabra}"?`)) return;
+    try {
+      await deletePalabraClave(kw.id);
+      await loadAll();
+      onNotify('Palabra clave eliminada');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'No se pudo eliminar');
+    }
   };
 
   if (schemaMissing) {
@@ -334,18 +358,28 @@ export function HooksCtaPage({ activeUser, schemaMissing, onNotify }: Props) {
                     </button>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={() =>
-                    void copyToClipboard(p.texto).then((ok) =>
-                      onNotify(ok ? 'Texto copiado' : 'No se pudo copiar')
-                    )
-                  }
-                >
-                  <Copy size={14} />
-                  Copiar
-                </button>
+                <div className="row" style={{ gap: 6 }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() =>
+                      void copyToClipboard(p.texto).then((ok) =>
+                        onNotify(ok ? 'Texto copiado' : 'No se pudo copiar')
+                      )
+                    }
+                  >
+                    <Copy size={14} />
+                    Copiar
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Eliminar elemento"
+                    onClick={() => void handleDeletePieza(p)}
+                  >
+                    <Trash2 size={15} color="#f87171" />
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -384,7 +418,17 @@ export function HooksCtaPage({ activeUser, schemaMissing, onNotify }: Props) {
 
           {palabras.map((kw) => (
             <div key={kw.id} className="card" style={{ gap: 4 }}>
-              <strong>{kw.palabra}</strong>
+              <div className="row-between">
+                <strong>{kw.palabra}</strong>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Eliminar palabra clave"
+                  onClick={() => void handleDeleteKeyword(kw)}
+                >
+                  <Trash2 size={15} color="#f87171" />
+                </button>
+              </div>
               {kw.recurso && <span className="muted">{kw.recurso}</span>}
             </div>
           ))}

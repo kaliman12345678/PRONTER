@@ -39,6 +39,7 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [scrollNotice, setScrollNotice] = useState<string | null>(null);
 
   // Voice tracking state
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -296,7 +297,7 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
         onClick={() => setShowControls((v) => !v)}
         data-testid="teleprompter-reading-area"
       >
-        <div className="teleprompter-content">
+        <div className="teleprompter-content" style={{ paddingBottom: '40vh' }}>
           {blocks.map((block, idx) => {
             const blockOffset = blockStartOffsets[idx] ?? 0;
             const tokens = tokenizeBlockWords(block.text);
@@ -353,7 +354,7 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
           className="teleprompter-controls-bottom"
           onClick={(e) => e.stopPropagation()}
         >
-          {voiceNotice && (
+          {(voiceNotice || scrollNotice) && (
             <div
               style={{
                 fontSize: '0.8rem',
@@ -361,7 +362,7 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
                 color: voiceEnabled ? '#38bdf8' : '#fde68a'
               }}
             >
-              {voiceNotice}
+              {voiceNotice || scrollNotice}
             </div>
           )}
 
@@ -382,8 +383,18 @@ export function TeleprompterPage({ documentTitle, blocks, onExit }: Props) {
               className="btn btn-primary"
               style={{ minWidth: 112 }}
               onClick={() => {
-                if (!isPlaying) setVoiceEnabled(false);
-                setIsPlaying((p) => !p);
+                if (!isPlaying) {
+                  const el = scrollRef.current;
+                  if (el && el.scrollHeight <= el.clientHeight + 2) {
+                    setScrollNotice('El texto ya cabe completo en pantalla');
+                    return;
+                  }
+                  setScrollNotice(null);
+                  setVoiceEnabled(false);
+                  setIsPlaying(true);
+                } else {
+                  setIsPlaying(false);
+                }
               }}
             >
               {isPlaying ? <Pause size={20} /> : <Play size={20} fill="currentColor" />}

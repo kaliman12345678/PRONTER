@@ -3,6 +3,7 @@ import { Plus, Trash2, UserCheck, UserPlus } from 'lucide-react';
 import {
   addCatalogoItem,
   deleteCatalogoItem,
+  deleteVotante,
   fetchCatalogos,
   fetchPesosViralidad,
   toggleVotanteActivo,
@@ -81,6 +82,19 @@ export function ReelLabSettingsPage({
     onNotify('Elemento agregado al catálogo');
   };
 
+  const handleDeleteUser = async (u: Votante) => {
+    if (!window.confirm(`¿Eliminar permanentemente a "${u.nombre}"? Se borrarán también sus votos.`)) {
+      return;
+    }
+    try {
+      await deleteVotante(u.id);
+      await onRefreshUsers();
+      onNotify('Usuario eliminado');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'No se pudo eliminar el usuario');
+    }
+  };
+
   if (schemaMissing) {
     return (
       <div className="page-content">
@@ -118,15 +132,27 @@ export function ReelLabSettingsPage({
                 {activeUser?.id === u.id && <span className="badge">Activo</span>}
                 {!u.activo && <span className="badge otro">Inactivo</span>}
               </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() =>
-                  void toggleVotanteActivo(u.id, !u.activo).then(onRefreshUsers)
-                }
-              >
-                {u.activo ? 'Desactivar' : 'Activar'}
-              </button>
+              <div className="row" style={{ gap: 6 }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() =>
+                    void toggleVotanteActivo(u.id, !u.activo).then(onRefreshUsers)
+                  }
+                >
+                  {u.activo ? 'Desactivar' : 'Activar'}
+                </button>
+                {!u.activo && activeUser?.id !== u.id && (
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label={`Eliminar usuario ${u.nombre}`}
+                    onClick={() => void handleDeleteUser(u)}
+                  >
+                    <Trash2 size={15} color="#f87171" />
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>
