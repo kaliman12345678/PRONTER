@@ -77,7 +77,29 @@ export interface IdeaConPuntaje {
   voto_promedio?: number | null;
   votos: number;
   guion_id?: number | null;
+  rescatada_de?: number | null;
   creado_en: string;
+}
+
+export interface VotoIdea {
+  idea_id: number;
+  votante_id: number;
+  puntaje: number;
+}
+
+export interface VotoPieza {
+  pieza_id: number;
+  votante_id: number;
+  puntaje: number;
+}
+
+export interface SketchBankItem {
+  sketch_url: string;
+  dialogo: string;
+  plano?: string | null;
+  tipo: BloqueTipo;
+  guion_id: number;
+  orden: number;
 }
 
 export type GuionEstado =

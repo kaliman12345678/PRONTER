@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
+  Clapperboard,
   Cloud,
   CloudOff,
   FolderKanban,
@@ -22,7 +23,8 @@ import {
   getStoredActiveUser,
   setStoredActiveUser
 } from './db/reellabService';
-import { StoryboardPrintModal } from './components/StoryboardPrintModal';
+import { ProcesoGuideModal } from './components/ProcesoGuideModal';
+import { StoryboardView } from './components/StoryboardView';
 import { UserSelectorModal } from './components/UserSelectorModal';
 import {
   createId,
@@ -47,6 +49,7 @@ import { PieceDetailPage } from './pages/PieceDetailPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { ReelLabSettingsPage } from './pages/ReelLabSettingsPage';
+import { ScriptsPage } from './pages/ScriptsPage';
 import { TeleprompterPage } from './pages/TeleprompterPage';
 import type {
   ContentPiece,
@@ -70,6 +73,7 @@ import {
 type ViewState =
   | { name: 'home' }
   | { name: 'ideas' }
+  | { name: 'scripts' }
   | { name: 'hooks' }
   | { name: 'settings' }
   | { name: 'projects' }
@@ -99,6 +103,8 @@ export function App() {
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [showUserModal, setShowUserModal] = useState(false);
   const [storyboardGuion, setStoryboardGuion] = useState<GuionResumen | null>(null);
+  const [showProcesoModal, setShowProcesoModal] = useState(false);
+  const [editGuionId, setEditGuionId] = useState<number | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -476,6 +482,9 @@ export function App() {
   } else if (view.name === 'ideas') {
     headerTitle = 'Banco de Ideas';
     headerSubtitle = 'Votos, viralidad y guiones';
+  } else if (view.name === 'scripts') {
+    headerTitle = 'Guiones y Storyboards';
+    headerSubtitle = 'Edición por escenas, sketches y PDF';
   } else if (view.name === 'hooks') {
     headerTitle = 'Ganchos y CTA';
     headerSubtitle = '49 tipos, banco y palabras clave';
@@ -559,7 +568,9 @@ export function App() {
             onGoImport={() => setView({ name: 'import', mode: 'pick' })}
             onGoPasteText={() => setView({ name: 'import', mode: 'paste' })}
             onGoIdeas={() => setView({ name: 'ideas' })}
+            onGoScripts={() => setView({ name: 'scripts' })}
             onGoHooks={() => setView({ name: 'hooks' })}
+            onOpenProcess={() => setShowProcesoModal(true)}
             onOpenPiece={(pieceId) => void handleOpenPiece(pieceId)}
           />
         )}
@@ -569,6 +580,21 @@ export function App() {
             activeUser={activeUser}
             schemaMissing={schemaMissing}
             onOpenStoryboard={(g) => setStoryboardGuion(g)}
+            onOpenProcess={() => setShowProcesoModal(true)}
+            onGoScripts={() => setView({ name: 'scripts' })}
+            onNotify={showToast}
+          />
+        )}
+
+        {view.name === 'scripts' && (
+          <ScriptsPage
+            initialEditGuionId={editGuionId}
+            onClearInitialEdit={() => setEditGuionId(null)}
+            schemaMissing={schemaMissing}
+            onOpenStoryboard={(g) => setStoryboardGuion(g)}
+            onOpenTeleprompter={(title, blocks) => {
+              setTeleprompterState({ customTitle: title, customBlocks: blocks });
+            }}
             onNotify={showToast}
           />
         )}
@@ -715,14 +741,27 @@ export function App() {
       </main>
 
       {storyboardGuion && (
-        <StoryboardPrintModal
+        <StoryboardView
           guion={storyboardGuion}
           onClose={() => setStoryboardGuion(null)}
+          onEditGuion={(id) => {
+            setEditGuionId(id);
+            setView({ name: 'scripts' });
+          }}
           onOpenTeleprompter={(title, blocks) => {
             setTeleprompterState({ customTitle: title, customBlocks: blocks });
           }}
           onNotify={showToast}
           onUpdated={async () => {}}
+        />
+      )}
+
+      {showProcesoModal && (
+        <ProcesoGuideModal
+          onClose={() => setShowProcesoModal(false)}
+          onGoIdeas={() => setView({ name: 'ideas' })}
+          onGoHooks={() => setView({ name: 'hooks' })}
+          onGoScripts={() => setView({ name: 'scripts' })}
         />
       )}
 
@@ -771,6 +810,14 @@ export function App() {
           >
             <Lightbulb size={20} />
             <span>Ideas</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-item ${view.name === 'scripts' ? 'active' : ''}`}
+            onClick={() => setView({ name: 'scripts' })}
+          >
+            <Clapperboard size={20} />
+            <span>Guiones</span>
           </button>
           <button
             type="button"

@@ -13,7 +13,10 @@ import type {
   PalabraClave,
   PesoViralidad,
   PiezaResumen,
-  Votante
+  SketchBankItem,
+  Votante,
+  VotoIdea,
+  VotoPieza
 } from '../types/reellab';
 
 const ACTIVE_USER_KEY = 'guion-en-pantalla-active-user-v1';
@@ -109,10 +112,26 @@ export async function fetchCatalogos(): Promise<CatalogoItem[]> {
 export async function addCatalogoItem(tipo: CatalogoTipo, valor: string): Promise<void> {
   const client = getSupabaseClient();
   if (!client) return;
+  const clean = valor.trim();
+  if (!clean) return;
   const { error } = await client
     .from('catalogo')
-    .insert({ tipo, valor: valor.trim(), activo: true, orden: 50 });
+    .insert({ tipo, valor: clean, activo: true, orden: 50 });
   if (error) throw new Error(error.message);
+
+  if (tipo === 'formato') {
+    const clave = `formato:${clean}`;
+    const { data: existing } = await client
+      .from('peso_viralidad')
+      .select('clave')
+      .eq('clave', clave)
+      .maybeSingle();
+    if (!existing) {
+      await client
+        .from('peso_viralidad')
+        .insert({ clave, etiqueta: `Formato ${clean}`, peso: 0 });
+    }
+  }
 }
 
 export async function deleteCatalogoItem(id: number): Promise<void> {
@@ -199,13 +218,37 @@ export async function saveIdeaVoto(
   if (error) throw new Error(error.message);
 }
 
+export async function fetchAllIdeaVotos(): Promise<VotoIdea[]> {
+  const client = getSupabaseClient();
+  if (!client) return [];
+  const { data } = await client.from('voto').select('idea_id, votante_id, puntaje');
+  return (data || []) as VotoIdea[];
+}
+
+export async function clearIdeaVoto(ideaId: number, votanteId: number): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const { error } = await client
+    .from('voto')
+    .delete()
+    .eq('idea_id', ideaId)
+    .eq('votante_id', votanteId);
+  if (error) throw new Error(error.message);
+}
+
 export async function createIdea(input: {
   titulo: string;
   texto_base?: string;
   pilar?: string;
   tematica?: string;
   formato?: string;
+  presentador?: string;
   referencia_url?: string;
+  contexto?: string;
+  palabras_clave?: string;
+  herramienta?: string;
+  duracion_aprox_s?: number | null;
+  origen?: 'manual' | 'ia' | 'referencia';
   lote_id?: number | null;
   nivel_conciencia?: number | null;
 }): Promise<IdeaConPuntaje> {
@@ -219,15 +262,57 @@ export async function createIdea(input: {
       pilar: input.pilar || null,
       tematica: input.tematica || null,
       formato: input.formato || null,
+      presentador: input.presentador || null,
       referencia_url: input.referencia_url?.trim() || null,
+      contexto: input.contexto?.trim() || null,
+      palabras_clave: input.palabras_clave?.trim() || null,
+      herramienta: input.herramienta || null,
+      duracion_aprox_s: input.duracion_aprox_s ?? null,
       lote_id: input.lote_id ?? null,
       nivel_conciencia: input.nivel_conciencia ?? null,
-      origen: input.referencia_url ? 'referencia' : 'manual'
+      origen: input.origen ?? (input.referencia_url ? 'referencia' : 'manual')
     })
     .select('id')
     .single();
   if (error) throw new Error(error.message);
 
+  const { data: full } = await client
+    .from('idea_con_puntaje')
+    .select('*')
+    .eq('id', inserted.id)
+    .single();
+  return full as IdeaConPuntaje;
+}
+
+export async function rescueIdeaToLote(
+  idea: IdeaConPuntaje,
+  targetLoteId: number
+): Promise<IdeaConPuntaje> {
+  const client = getSupabaseClient();
+  if (!client) throw new Error('Sin conexión a Supabase');
+  const { data: inserted, error } = await client
+    .from('idea')
+    .insert({
+      lote_id: targetLoteId,
+      rescatada_de: idea.id,
+      estado: 'nueva',
+      origen: idea.origen,
+      titulo: idea.titulo,
+      texto_base: idea.texto_base || null,
+      texto_pantalla: idea.texto_pantalla || null,
+      pilar: idea.pilar || null,
+      tematica: idea.tematica || null,
+      formato: idea.formato || null,
+      presentador: idea.presentador || null,
+      referencia_url: idea.referencia_url || null,
+      contexto: idea.contexto || null,
+      palabras_clave: idea.palabras_clave || null,
+      herramienta: idea.herramienta || null,
+      nivel_conciencia: idea.nivel_conciencia ?? null
+    })
+    .select('id')
+    .single();
+  if (error) throw new Error(error.message);
   const { data: full } = await client
     .from('idea_con_puntaje')
     .select('*')
@@ -374,6 +459,86 @@ export async function updateGuionEstado(guionId: number, estado: GuionEstado): P
   if (error) throw new Error(error.message);
 }
 
+export async function updateGuionMeta(
+  guionId: number,
+  patch: Partial<{
+    titulo: string;
+    numero: number | null;
+    objetivo: string | null;
+    estado: GuionEstado;
+    duracion_max_s: number;
+    formato_grabacion: string;
+    locacion: string | null;
+    iluminacion: string | null;
+    tono: string | null;
+    ganchos_alternativos: string[];
+    notas: string[];
+    gancho_id: number | null;
+    cta_id: number | null;
+  }>
+): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const { error } = await client.from('guion').update(patch).eq('id', guionId);
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteGuion(guionId: number): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  await client.from('bloque').delete().eq('guion_id', guionId);
+  const { error } = await client.from('guion').delete().eq('id', guionId);
+  if (error) throw new Error(error.message);
+}
+
+export async function saveAllBloques(
+  guionId: number,
+  bloques: BloqueStoryboard[]
+): Promise<BloqueStoryboard[]> {
+  const client = getSupabaseClient();
+  if (!client) return bloques;
+  const { error: delErr } = await client.from('bloque').delete().eq('guion_id', guionId);
+  if (delErr) throw new Error(delErr.message);
+  if (bloques.length === 0) return [];
+  const rows = bloques.map((b, i) => ({
+    guion_id: guionId,
+    orden: i + 1,
+    tipo: b.tipo,
+    inicio_s: b.inicio_s ?? null,
+    fin_s: b.fin_s ?? null,
+    dialogo: b.dialogo || '',
+    texto_pantalla: b.texto_pantalla || '',
+    plano: b.plano || null,
+    camara: b.camara || null,
+    edicion: b.edicion || [],
+    sketch_url: b.sketch_url || null,
+    sketch_prompt: b.sketch_prompt || null,
+    sketch_texto: b.sketch_texto?.trim() || null,
+    grabado: !!b.grabado,
+    exportado: !!b.exportado
+  }));
+  const { data, error } = await client.from('bloque').insert(rows).select('*').order('orden');
+  if (error) throw new Error(error.message);
+  return (data || []) as BloqueStoryboard[];
+}
+
+export async function fetchSketchBank(): Promise<SketchBankItem[]> {
+  const client = getSupabaseClient();
+  if (!client) return [];
+  const { data, error } = await client
+    .from('bloque')
+    .select('sketch_url, dialogo, plano, tipo, guion_id, orden')
+    .not('sketch_url', 'is', null);
+  if (error || !data) return [];
+  const seen = new Map<string, SketchBankItem>();
+  for (const row of data as SketchBankItem[]) {
+    if (row.sketch_url && !seen.has(row.sketch_url)) {
+      seen.set(row.sketch_url, row);
+    }
+  }
+  return Array.from(seen.values());
+}
+
 export async function saveBloque(bloque: BloqueStoryboard): Promise<void> {
   const client = getSupabaseClient();
   if (!client) return;
@@ -452,19 +617,96 @@ export async function createPiezaGanchoCta(input: {
   visual?: string;
   gancho_tipo_id?: number | null;
   objetivo?: string;
+  palabra_clave_id?: number | null;
+  guion_id?: number | null;
+  estado?: PiezaResumen['estado'];
+  checklist?: Record<string, boolean>;
+  resultado?: number | null;
   nota?: string;
-}): Promise<void> {
+}): Promise<number | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+  const { data, error } = await client
+    .from('pieza')
+    .insert({
+      clase: input.clase,
+      texto: input.texto.trim(),
+      visual: input.visual?.trim() || null,
+      gancho_tipo_id: input.gancho_tipo_id ?? null,
+      objetivo: input.objetivo || null,
+      palabra_clave_id: input.palabra_clave_id ?? null,
+      guion_id: input.guion_id ?? null,
+      estado: input.estado || 'potencial',
+      checklist: input.checklist || {},
+      resultado: input.estado === 'usado' ? input.resultado ?? null : null,
+      nota: input.nota?.trim() || null
+    })
+    .select('id')
+    .single();
+  if (error) throw new Error(error.message);
+  return (data?.id as number) ?? null;
+}
+
+export async function updatePiezaGanchoCta(
+  id: number,
+  patch: Partial<{
+    texto: string;
+    visual: string | null;
+    gancho_tipo_id: number | null;
+    objetivo: string | null;
+    palabra_clave_id: number | null;
+    guion_id: number | null;
+    estado: PiezaResumen['estado'];
+    checklist: Record<string, boolean>;
+    resultado: number | null;
+    nota: string | null;
+  }>
+): Promise<void> {
   const client = getSupabaseClient();
   if (!client) return;
-  const { error } = await client.from('pieza').insert({
-    clase: input.clase,
-    texto: input.texto.trim(),
-    visual: input.visual?.trim() || null,
-    gancho_tipo_id: input.gancho_tipo_id ?? null,
-    objetivo: input.objetivo || null,
-    nota: input.nota?.trim() || null
-  });
+  const { error } = await client.from('pieza').update(patch).eq('id', id);
   if (error) throw new Error(error.message);
+}
+
+export async function assignPiezaToGuion(
+  pieza: { id: number; clase: 'gancho' | 'cta'; texto: string },
+  guionId: number,
+  copyToScene: boolean
+): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const field = pieza.clase === 'gancho' ? 'gancho_id' : 'cta_id';
+  const { data: g } = await client.from('guion').select(field).eq('id', guionId).maybeSingle();
+  const prevId = g ? (g as Record<string, number | null>)[field] : null;
+  if (prevId && prevId !== pieza.id) {
+    await client.from('pieza').update({ estado: 'potencial' }).eq('id', prevId);
+  }
+  await client.from('pieza').update({ estado: 'en_uso', guion_id: guionId }).eq('id', pieza.id);
+  const { error } = await client.from('guion').update({ [field]: pieza.id }).eq('id', guionId);
+  if (error) throw new Error(error.message);
+
+  if (copyToScene) {
+    const { data: scenes } = await client
+      .from('bloque')
+      .select('id, tipo, orden')
+      .eq('guion_id', guionId)
+      .order('orden');
+    const list = (scenes || []) as Array<{ id: number; tipo: string; orden: number }>;
+    const target =
+      pieza.clase === 'gancho'
+        ? list.find((s) => s.tipo === 'gancho')
+        : [...list].reverse().find((s) => s.tipo === 'cta');
+    if (target) {
+      await client.from('bloque').update({ dialogo: pieza.texto }).eq('id', target.id);
+    }
+  }
+}
+
+export async function fetchAllPiezaVotos(): Promise<VotoPieza[]> {
+  const client = getSupabaseClient();
+  if (!client) return [];
+  const { data } = await client.from('voto_pieza').select('pieza_id, votante_id, puntaje');
+  return (data || []) as VotoPieza[];
 }
 
 export async function savePiezaVoto(
@@ -507,15 +749,36 @@ export async function createPalabraClave(input: {
   palabra: string;
   recurso?: string;
   variantes?: string;
+  herramienta?: string;
 }): Promise<void> {
   const client = getSupabaseClient();
   if (!client) return;
-  const clean = input.palabra.trim().toUpperCase();
+  const clean = input.palabra
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\s+/g, '');
+  if (!clean) return;
+  const now = new Date();
+  const dd = String(now.getDate()).padStart(2, '0');
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const yy = String(now.getFullYear()).slice(2);
   const { error } = await client.from('palabra_clave').insert({
     palabra: clean,
     recurso: input.recurso?.trim() || null,
-    variantes: input.variantes?.trim() || null
+    variantes: input.variantes?.trim() || null,
+    herramienta: input.herramienta || null,
+    codigo: `${clean} ${dd}${mm}${yy}`,
+    activa: true
   });
+  if (error) throw new Error(error.message);
+}
+
+export async function togglePalabraClaveActiva(id: number, activa: boolean): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const { error } = await client.from('palabra_clave').update({ activa }).eq('id', id);
   if (error) throw new Error(error.message);
 }
 

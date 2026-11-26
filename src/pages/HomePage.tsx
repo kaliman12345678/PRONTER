@@ -1,5 +1,7 @@
 import {
+  BookOpen,
   ChevronRight,
+  Clapperboard,
   ClipboardPaste,
   FileUp,
   FolderKanban,
@@ -17,7 +19,9 @@ interface Props {
   onGoImport: () => void;
   onGoPasteText: () => void;
   onGoIdeas: () => void;
+  onGoScripts: () => void;
   onGoHooks: () => void;
+  onOpenProcess: () => void;
   onOpenPiece: (pieceId: string) => void;
 }
 
@@ -28,7 +32,9 @@ export function HomePage({
   onGoImport,
   onGoPasteText,
   onGoIdeas,
+  onGoScripts,
   onGoHooks,
+  onOpenProcess,
   onOpenPiece
 }: Props) {
   const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
@@ -71,10 +77,31 @@ export function HomePage({
           type="button"
           className="btn btn-secondary"
           style={{ flex: 1 }}
+          onClick={onGoScripts}
+        >
+          <Clapperboard size={18} color="#a78bfa" />
+          Guiones
+        </button>
+      </div>
+
+      <div className="row" style={{ gap: 10 }}>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ flex: 1 }}
           onClick={onGoHooks}
         >
           <Wand2 size={18} color="#34d399" />
           49 Ganchos y CTA
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ flex: 1 }}
+          onClick={onOpenProcess}
+        >
+          <BookOpen size={18} color="#38bdf8" />
+          Guía de Proceso
         </button>
       </div>
 
