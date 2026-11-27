@@ -85,7 +85,7 @@ Reglas:
         },
         body: JSON.stringify({
           model: modelId,
-          max_tokens: 1800,
+          max_tokens: 4096,
           system: systemPrompt,
           messages: [{ role: 'user', content: userPrompt }]
         })
@@ -120,16 +120,45 @@ Reglas:
     }
 
     const data = await anthropicRes.json();
-    const rawText: string = data?.content?.[0]?.text || '';
+    const rawText: string = (data?.content?.[0]?.text || '')
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .trim();
+
+    let parsed: { bloques?: unknown[] } | null = null;
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0]) as { bloques?: unknown[] };
+      } catch {
+        parsed = null;
+      }
+    }
+
+    // Fallback: extract complete objects inside "bloques" if output was truncated
+    if (!parsed || !Array.isArray(parsed.bloques)) {
+      const objMatches = rawText.match(/\{[^{}]*"titulo"\s*:[^{}]*\}/g) || [];
+      const recovered = objMatches
+        .map((chunk) => {
+          try {
+            return JSON.parse(chunk);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      if (recovered.length > 0) {
+        parsed = { bloques: recovered };
+      }
+    }
+
+    if (!parsed || !Array.isArray(parsed.bloques) || parsed.bloques.length === 0) {
       return new Response(
         JSON.stringify({ error: 'La IA no devolvió un JSON válido.' }),
         { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
     return new Response(JSON.stringify(parsed), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
