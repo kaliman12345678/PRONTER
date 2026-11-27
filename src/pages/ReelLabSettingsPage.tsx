@@ -28,7 +28,6 @@ import {
   GEMINI_MODELS,
   TRENDS_GEOS,
   TRENDS_SOURCES,
-  clearEncryptedTeamKey,
   getAIConfig,
   getTeamVaultStatus,
   saveAndSyncAIConfig,
@@ -88,7 +87,6 @@ export function ReelLabSettingsPage({
     tavily: { configured: false, hint: '' },
     claude: { configured: false, hint: '' }
   });
-  const [encryptInSupabase, setEncryptInSupabase] = useState(true);
   const [testingAI, setTestingAI] = useState(false);
   const [testingTrends, setTestingTrends] = useState(false);
   const [savingAI, setSavingAI] = useState(false);
@@ -165,20 +163,18 @@ export function ReelLabSettingsPage({
     try {
       let updatedCfg = { ...aiCfg };
 
-      // Encrypt pasted keys in Supabase server vault so nobody can view them again
-      if (encryptInSupabase) {
-        if (updatedCfg.geminiApiKey.trim()) {
-          await saveEncryptedTeamKey('gemini', updatedCfg.geminiApiKey.trim());
-          updatedCfg.geminiApiKey = '';
-        }
-        if (updatedCfg.tavilyApiKey.trim()) {
-          await saveEncryptedTeamKey('tavily', updatedCfg.tavilyApiKey.trim());
-          updatedCfg.tavilyApiKey = '';
-        }
-        if (updatedCfg.claudeApiKey.trim()) {
-          await saveEncryptedTeamKey('claude', updatedCfg.claudeApiKey.trim());
-          updatedCfg.claudeApiKey = '';
-        }
+      // Always encrypt pasted keys in Supabase server vault so nobody can view them again
+      if (updatedCfg.geminiApiKey.trim()) {
+        await saveEncryptedTeamKey('gemini', updatedCfg.geminiApiKey.trim());
+        updatedCfg.geminiApiKey = '';
+      }
+      if (updatedCfg.tavilyApiKey.trim()) {
+        await saveEncryptedTeamKey('tavily', updatedCfg.tavilyApiKey.trim());
+        updatedCfg.tavilyApiKey = '';
+      }
+      if (updatedCfg.claudeApiKey.trim()) {
+        await saveEncryptedTeamKey('claude', updatedCfg.claudeApiKey.trim());
+        updatedCfg.claudeApiKey = '';
       }
 
       const { synced } = await saveAndSyncAIConfig(
@@ -198,17 +194,6 @@ export function ReelLabSettingsPage({
       onNotify(err instanceof Error ? err.message : 'Error al guardar configuración IA');
     } finally {
       setSavingAI(false);
-    }
-  };
-
-  const handleClearVaultKey = async (keyName: 'gemini' | 'tavily' | 'claude') => {
-    if (!window.confirm('¿Quitar la clave cifrada guardada en Supabase?')) return;
-    try {
-      await clearEncryptedTeamKey(keyName);
-      setVaultStatus(await getTeamVaultStatus());
-      onNotify('Clave eliminada de la bóveda');
-    } catch (err) {
-      onNotify(err instanceof Error ? err.message : 'No se pudo quitar la clave');
     }
   };
 
@@ -275,23 +260,18 @@ export function ReelLabSettingsPage({
           </select>
         </div>
 
-        <label className="row" style={{ gap: 8, fontSize: '0.83rem', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={encryptInSupabase}
-            onChange={(e) => setEncryptInSupabase(e.target.checked)}
-          />
+        <div className="muted row" style={{ gap: 6, fontSize: '0.8rem' }}>
+          <Lock size={13} color="#34d399" />
           <span>
-            <Lock size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-            Cifrar claves en Supabase (nadie vuelve a ver la API Key; aplica a todo el equipo)
+            Las claves API siempre se guardan cifradas en Supabase (nadie vuelve a verlas; aplica a
+            todo el equipo).
           </span>
-        </label>
+        </div>
 
-        {!vaultStatus.deployed && encryptInSupabase && (
+        {!vaultStatus.deployed && (
           <div className="alert warning" style={{ fontSize: '0.8rem', padding: '8px 10px' }}>
-            Falta desplegar <code>supabase/functions/ai-proxy</code> en Supabase para activar la
-            bóveda cifrada. Si aún no la despliegas, desmarca esa casilla para guardar solo en este
-            dispositivo temporalmente.
+            No se detectó la bóveda cifrada <code>ai-proxy</code> en Supabase. Verifica que esté
+            desplegada para cifrar claves del equipo.
           </div>
         )}
 
@@ -307,30 +287,10 @@ export function ReelLabSettingsPage({
             }}
           >
             <div className="field">
-              <div className="row-between">
-                <label htmlFor="gemini-key-in">API Key de Google AI Studio</label>
-                <a
-                  href="https://aistudio.google.com/apikey"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ color: '#38bdf8', fontSize: '0.78rem' }}
-                >
-                  Crear clave →
-                </a>
-              </div>
+              <label htmlFor="gemini-key-in">API Key de Google AI Studio</label>
               {vaultStatus.gemini.configured && (
-                <div className="row-between" style={{ fontSize: '0.8rem', marginBottom: 4 }}>
-                  <span style={{ color: '#34d399' }}>
-                    🔒 Clave cifrada y oculta en Supabase ({vaultStatus.gemini.hint})
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    style={{ minHeight: 24, padding: '2px 6px', fontSize: '0.75rem', color: '#f87171' }}
-                    onClick={() => void handleClearVaultKey('gemini')}
-                  >
-                    Quitar
-                  </button>
+                <div style={{ fontSize: '0.8rem', marginBottom: 4, color: '#34d399' }}>
+                  🔒 Clave cifrada y oculta en Supabase ({vaultStatus.gemini.hint})
                 </div>
               )}
               <input
@@ -384,18 +344,8 @@ export function ReelLabSettingsPage({
             <div className="field">
               <label htmlFor="claude-key-in">API Key de Anthropic</label>
               {vaultStatus.claude.configured && (
-                <div className="row-between" style={{ fontSize: '0.8rem', marginBottom: 4 }}>
-                  <span style={{ color: '#34d399' }}>
-                    🔒 Clave cifrada y oculta en Supabase ({vaultStatus.claude.hint})
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    style={{ minHeight: 24, padding: '2px 6px', fontSize: '0.75rem', color: '#f87171' }}
-                    onClick={() => void handleClearVaultKey('claude')}
-                  >
-                    Quitar
-                  </button>
+                <div style={{ fontSize: '0.8rem', marginBottom: 4, color: '#34d399' }}>
+                  🔒 Clave cifrada y oculta en Supabase ({vaultStatus.claude.hint})
                 </div>
               )}
               <input
@@ -495,32 +445,12 @@ export function ReelLabSettingsPage({
 
           {(aiCfg.trendsSource === 'tavily' || aiCfg.trendsSource === 'auto') && (
             <div className="field">
-              <div className="row-between">
-                <label htmlFor="tavily-key-in">
-                  API Key gratuita de Tavily (opcional · 1,000 búsquedas/mes sin tarjeta)
-                </label>
-                <a
-                  href="https://app.tavily.com"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ color: '#38bdf8', fontSize: '0.76rem' }}
-                >
-                  Obtener gratis →
-                </a>
-              </div>
+              <label htmlFor="tavily-key-in">
+                API Key gratuita de Tavily (opcional · 1,000 búsquedas/mes sin tarjeta)
+              </label>
               {vaultStatus.tavily.configured && (
-                <div className="row-between" style={{ fontSize: '0.8rem', marginBottom: 4 }}>
-                  <span style={{ color: '#34d399' }}>
-                    🔒 Clave Tavily cifrada ({vaultStatus.tavily.hint})
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    style={{ minHeight: 24, padding: '2px 6px', fontSize: '0.75rem', color: '#f87171' }}
-                    onClick={() => void handleClearVaultKey('tavily')}
-                  >
-                    Quitar
-                  </button>
+                <div style={{ fontSize: '0.8rem', marginBottom: 4, color: '#34d399' }}>
+                  🔒 Clave Tavily cifrada ({vaultStatus.tavily.hint})
                 </div>
               )}
               <input

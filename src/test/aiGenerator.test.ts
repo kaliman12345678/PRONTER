@@ -9,6 +9,7 @@ import {
   getBrandContext,
   parseJsonLenient,
   saveAIConfig,
+  saveAndSyncAIConfig,
   type AIConfig
 } from '../services/aiGenerator';
 
@@ -280,5 +281,28 @@ describe('aiGenerator dual-provider & team sync service', () => {
     expect(res.meta.trendSourceLabel).toBe('Tavily IA');
     expect(res.meta.sources[0].uri).toBe('https://news.example/1');
     expect(res.ideas[0].titulo).toBe('Envíos gratis que sí dan margen');
+  });
+
+  it('never persists plaintext API keys to localStorage during saveAndSyncAIConfig', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('null', { status: 201, headers: { 'Content-Type': 'application/json' } })
+    );
+
+    await saveAndSyncAIConfig(
+      makeConfig({
+        geminiApiKey: 'AQ.secret-gemini',
+        claudeApiKey: 'sk-ant-secret',
+        tavilyApiKey: 'tvly-secret'
+      }),
+      'Marca segura',
+      'Admin'
+    );
+
+    const stored = getAIConfig();
+    expect(stored.geminiApiKey).toBe('');
+    expect(stored.claudeApiKey).toBe('');
+    expect(stored.tavilyApiKey).toBe('');
+    expect(localStorage.getItem('pronter-ai-config-v1')).not.toContain('AQ.secret-gemini');
+    expect(getBrandContext()).toBe('Marca segura');
   });
 });

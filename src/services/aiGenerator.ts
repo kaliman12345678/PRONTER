@@ -260,6 +260,9 @@ export async function saveAndSyncAIConfig(
   const now = Date.now();
   const next: AIConfig = {
     ...config,
+    geminiApiKey: '',
+    claudeApiKey: '',
+    tavilyApiKey: '',
     useTrendsSearch: config.trendsSource !== 'off',
     updatedAt: now,
     updatedBy: updatedBy || config.updatedBy || undefined
@@ -351,22 +354,6 @@ export async function saveEncryptedTeamKey(
   }
   if (data?.error) throw new Error(String(data.error));
   return { hint: String(data?.hint || '••••') };
-}
-
-export async function clearEncryptedTeamKey(
-  keyName: 'gemini' | 'tavily' | 'claude'
-): Promise<void> {
-  const client = getSupabaseClient();
-  if (!client) return;
-  const { data, error } = await client.functions.invoke('ai-proxy', {
-    body: {
-      action: 'clear_key',
-      spaceKey: getSpaceKey(),
-      keyName
-    }
-  });
-  if (error) throw new Error(await readEdgeErrorDetail(error));
-  if (data?.error) throw new Error(String(data.error));
 }
 
 function stripMarkdownFences(text: string): string {
