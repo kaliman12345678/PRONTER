@@ -32,6 +32,7 @@ import {
   uploadSketchImage
 } from '../db/reellabService';
 import {
+  AI_CONFIG_CHANGED_EVENT,
   completeStoryboardWithAI,
   generateScriptExpertWithAI,
   getActiveProviderLabel,
@@ -184,7 +185,19 @@ export function ScriptsPage({
   // AI script & storyboard generation
   const [aiBusy, setAiBusy] = useState<'script' | 'storyboard' | null>(null);
   const [aiMeta, setAiMeta] = useState<AIGenerationMeta | null>(null);
-  const [aiUseTrends, setAiUseTrends] = useState(() => getAIConfig().useTrendsSearch);
+  const [aiProviderLabel, setAiProviderLabel] = useState(() => getActiveProviderLabel());
+  const [aiUseTrends, setAiUseTrends] = useState(
+    () => getAIConfig().trendsSource !== 'off'
+  );
+
+  useEffect(() => {
+    const syncLabels = () => {
+      setAiProviderLabel(getActiveProviderLabel());
+      setAiUseTrends(getAIConfig().trendsSource !== 'off');
+    };
+    window.addEventListener(AI_CONFIG_CHANGED_EVENT, syncLabels);
+    return () => window.removeEventListener(AI_CONFIG_CHANGED_EVENT, syncLabels);
+  }, []);
 
   const loadAll = async () => {
     setLoading(true);
@@ -643,16 +656,16 @@ export function ScriptsPage({
               <Sparkles size={16} color="#a78bfa" />
               <strong style={{ fontSize: '0.92rem' }}>Asistente IA de Guion y Storyboard</strong>
             </div>
-            <span className="badge estructura">{getActiveProviderLabel()}</span>
+            <span className="badge estructura">{aiProviderLabel}</span>
           </div>
-          {getAIConfig().provider === 'gemini' && (
+          {getAIConfig().trendsSource !== 'off' && (
             <label className="row" style={{ gap: 6, fontSize: '0.82rem', cursor: 'pointer' }}>
               <input
                 type="checkbox"
                 checked={aiUseTrends}
                 onChange={(e) => setAiUseTrends(e.target.checked)}
               />
-              Consultar tendencias y memes en Google antes de redactar
+              Consultar tendencias y memes actuales antes de redactar
             </label>
           )}
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>

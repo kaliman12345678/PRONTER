@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
-  Eye,
-  EyeOff,
+  Globe,
+  Lock,
   Plus,
   RotateCcw,
   Save,
@@ -18,19 +18,27 @@ import {
   fetchCatalogos,
   fetchPesosViralidad,
   getBrandContext,
-  setBrandContext,
   toggleVotanteActivo,
   updatePesoViralidad
 } from '../db/reellabService';
 import {
+  AI_CONFIG_CHANGED_EVENT,
   CLAUDE_MODELS,
   DEFAULT_EXPERT_PERSONA,
   GEMINI_MODELS,
+  TRENDS_GEOS,
+  TRENDS_SOURCES,
+  clearEncryptedTeamKey,
   getAIConfig,
-  saveAIConfig,
+  getTeamVaultStatus,
+  saveAndSyncAIConfig,
+  saveEncryptedTeamKey,
   testAIConnection,
+  testTrendsConnection,
   type AIConfig,
-  type AIProvider
+  type AIProvider,
+  type TeamVaultStatus,
+  type TrendsSource
 } from '../services/aiGenerator';
 import type {
   CatalogoItem,
@@ -74,16 +82,26 @@ export function ReelLabSettingsPage({
   const [pesos, setPesos] = useState<PesoViralidad[]>([]);
   const [brandCtx, setBrandCtx] = useState(() => getBrandContext());
   const [aiCfg, setAiCfg] = useState<AIConfig>(() => getAIConfig());
-  const [showKey, setShowKey] = useState(false);
+  const [vaultStatus, setVaultStatus] = useState<TeamVaultStatus>({
+    deployed: false,
+    gemini: { configured: false, hint: '' },
+    tavily: { configured: false, hint: '' },
+    claude: { configured: false, hint: '' }
+  });
+  const [encryptInSupabase, setEncryptInSupabase] = useState(true);
   const [testingAI, setTestingAI] = useState(false);
+  const [testingTrends, setTestingTrends] = useState(false);
+  const [savingAI, setSavingAI] = useState(false);
 
   const loadSettings = async () => {
-    const [cats, pList] = await Promise.all([
+    const [cats, pList, vStatus] = await Promise.all([
       fetchCatalogos(),
-      fetchPesosViralidad()
+      fetchPesosViralidad(),
+      getTeamVaultStatus()
     ]);
     setCatalogos(cats);
     setPesos(pList);
+    setVaultStatus(vStatus);
   };
 
   useEffect(() => {
@@ -91,6 +109,15 @@ export function ReelLabSettingsPage({
       void loadSettings();
     }
   }, [schemaMissing]);
+
+  useEffect(() => {
+    const onRemoteChange = () => {
+      setAiCfg(getAIConfig());
+      setBrandCtx(getBrandContext());
+    };
+    window.addEventListener(AI_CONFIG_CHANGED_EVENT, onRemoteChange);
+    return () => window.removeEventListener(AI_CONFIG_CHANGED_EVENT, onRemoteChange);
+  }, []);
 
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,16 +160,61 @@ export function ReelLabSettingsPage({
     );
   }
 
-  const handleSaveAI = () => {
-    setBrandContext(brandCtx);
-    saveAIConfig(aiCfg);
-    onNotify('Configuración IA y contexto guardados');
+  const handleSaveAI = async () => {
+    setSavingAI(true);
+    try {
+      let updatedCfg = { ...aiCfg };
+
+      // Encrypt pasted keys in Supabase server vault so nobody can view them again
+      if (encryptInSupabase) {
+        if (updatedCfg.geminiApiKey.trim()) {
+          await saveEncryptedTeamKey('gemini', updatedCfg.geminiApiKey.trim());
+          updatedCfg.geminiApiKey = '';
+        }
+        if (updatedCfg.tavilyApiKey.trim()) {
+          await saveEncryptedTeamKey('tavily', updatedCfg.tavilyApiKey.trim());
+          updatedCfg.tavilyApiKey = '';
+        }
+        if (updatedCfg.claudeApiKey.trim()) {
+          await saveEncryptedTeamKey('claude', updatedCfg.claudeApiKey.trim());
+          updatedCfg.claudeApiKey = '';
+        }
+      }
+
+      const { synced } = await saveAndSyncAIConfig(
+        updatedCfg,
+        brandCtx,
+        activeUser?.nombre || 'Equipo'
+      );
+      setAiCfg(getAIConfig());
+      const nextVault = await getTeamVaultStatus();
+      setVaultStatus(nextVault);
+      onNotify(
+        synced
+          ? 'Configuración IA guardada y sincronizada para todo el equipo'
+          : 'Guardado localmente (sin conexión a nube)'
+      );
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Error al guardar configuración IA');
+    } finally {
+      setSavingAI(false);
+    }
+  };
+
+  const handleClearVaultKey = async (keyName: 'gemini' | 'tavily' | 'claude') => {
+    if (!window.confirm('¿Quitar la clave cifrada guardada en Supabase?')) return;
+    try {
+      await clearEncryptedTeamKey(keyName);
+      setVaultStatus(await getTeamVaultStatus());
+      onNotify('Clave eliminada de la bóveda');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'No se pudo quitar la clave');
+    }
   };
 
   const handleTestAI = async () => {
     setTestingAI(true);
     try {
-      saveAIConfig(aiCfg);
       const msg = await testAIConnection(aiCfg);
       onNotify(msg);
     } catch (err) {
@@ -152,13 +224,25 @@ export function ReelLabSettingsPage({
     }
   };
 
+  const handleTestTrends = async () => {
+    setTestingTrends(true);
+    try {
+      const msg = await testTrendsConnection(aiCfg);
+      onNotify(msg);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Error al probar tendencias');
+    } finally {
+      setTestingTrends(false);
+    }
+  };
+
   return (
     <div className="page-content">
       <div className="card">
         <div className="row-between" style={{ flexWrap: 'wrap', gap: 6 }}>
           <div className="row">
             <Sparkles size={20} color="#a78bfa" />
-            <strong>Motor IA y Experto en Tendencias</strong>
+            <strong>Motor IA del Equipo (Sincronizado)</strong>
           </div>
           <span className="badge estructura">
             {aiCfg.provider === 'gemini'
@@ -167,6 +251,17 @@ export function ReelLabSettingsPage({
               ? 'Claude Directo'
               : 'Claude Servidor'}
           </span>
+        </div>
+
+        <div className="alert" style={{ fontSize: '0.82rem', padding: '8px 10px' }}>
+          Al guardar aquí, la <strong>API activa, modelo, fuente de tendencias y reglas</strong>{' '}
+          se aplican automáticamente a todos los dispositivos del equipo.
+          {aiCfg.updatedBy && aiCfg.updatedAt ? (
+            <div className="muted" style={{ marginTop: 2 }}>
+              Último cambio por <strong>{aiCfg.updatedBy}</strong> ·{' '}
+              {new Date(aiCfg.updatedAt).toLocaleString('es-CO')}
+            </div>
+          ) : null}
         </div>
 
         <div className="field">
@@ -179,11 +274,31 @@ export function ReelLabSettingsPage({
               setAiCfg((prev) => ({ ...prev, provider: e.target.value as AIProvider }))
             }
           >
-            <option value="gemini">Google Gemini (API Key propia · Free Tier o Créditos Pro)</option>
+            <option value="gemini">Google Gemini (Free Tier o Créditos Pro)</option>
             <option value="claude-edge">Claude — Servidor actual del equipo (Supabase)</option>
-            <option value="claude-direct">Claude — API Key propia (Anthropic directo)</option>
+            <option value="claude-direct">Claude — Clave propia / bóveda cifrada</option>
           </select>
         </div>
+
+        <label className="row" style={{ gap: 8, fontSize: '0.83rem', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={encryptInSupabase}
+            onChange={(e) => setEncryptInSupabase(e.target.checked)}
+          />
+          <span>
+            <Lock size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+            Cifrar claves en Supabase (nadie vuelve a ver la API Key; aplica a todo el equipo)
+          </span>
+        </label>
+
+        {!vaultStatus.deployed && encryptInSupabase && (
+          <div className="alert warning" style={{ fontSize: '0.8rem', padding: '8px 10px' }}>
+            Falta desplegar <code>supabase/functions/ai-proxy</code> en Supabase para activar la
+            bóveda cifrada. Si aún no la despliegas, desmarca esa casilla para guardar solo en este
+            dispositivo temporalmente.
+          </div>
+        )}
 
         {aiCfg.provider === 'gemini' && (
           <div
@@ -205,29 +320,39 @@ export function ReelLabSettingsPage({
                   rel="noreferrer"
                   style={{ color: '#38bdf8', fontSize: '0.78rem' }}
                 >
-                  Crear clave en AI Studio →
+                  Crear clave →
                 </a>
               </div>
-              <div className="row" style={{ gap: 6 }}>
-                <input
-                  id="gemini-key-in"
-                  type={showKey ? 'text' : 'password'}
-                  className="input"
-                  placeholder="AQ... o AIza..."
-                  value={aiCfg.geminiApiKey}
-                  onChange={(e) =>
-                    setAiCfg((prev) => ({ ...prev, geminiApiKey: e.target.value }))
-                  }
-                />
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label="Mostrar u ocultar clave"
-                  onClick={() => setShowKey((v) => !v)}
-                >
-                  {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
+              {vaultStatus.gemini.configured && (
+                <div className="row-between" style={{ fontSize: '0.8rem', marginBottom: 4 }}>
+                  <span style={{ color: '#34d399' }}>
+                    🔒 Clave cifrada y oculta en Supabase ({vaultStatus.gemini.hint})
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ minHeight: 24, padding: '2px 6px', fontSize: '0.75rem', color: '#f87171' }}
+                    onClick={() => void handleClearVaultKey('gemini')}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              )}
+              <input
+                id="gemini-key-in"
+                type="password"
+                autoComplete="off"
+                className="input"
+                placeholder={
+                  vaultStatus.gemini.configured
+                    ? 'Pega otra clave solo si quieres reemplazarla...'
+                    : 'AQ... o AIza...'
+                }
+                value={aiCfg.geminiApiKey}
+                onChange={(e) =>
+                  setAiCfg((prev) => ({ ...prev, geminiApiKey: e.target.value }))
+                }
+              />
             </div>
 
             <div className="field">
@@ -247,27 +372,13 @@ export function ReelLabSettingsPage({
                 ))}
               </select>
             </div>
-
-            <label className="row" style={{ gap: 8, fontSize: '0.86rem', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={aiCfg.useTrendsSearch}
-                onChange={(e) =>
-                  setAiCfg((prev) => ({ ...prev, useTrendsSearch: e.target.checked }))
-                }
-              />
-              <span>
-                Consultar tendencias, temas actuales y memes en Google antes de generar{' '}
-                <small className="muted">(usa búsqueda en vivo si el plan la habilita)</small>
-              </span>
-            </label>
           </div>
         )}
 
         {aiCfg.provider === 'claude-edge' && (
           <div className="alert" style={{ fontSize: '0.84rem' }}>
-            Usa la conexión actual desplegada en Supabase (<code>generar-guion</code>) con la
-            clave de Anthropic guardada en el servidor. Todo el equipo puede usarla sin pegar clave.
+            Usa la función actual desplegada en Supabase (<code>generar-guion</code>) con la
+            clave de Anthropic guardada en Supabase Secrets.
           </div>
         )}
 
@@ -283,27 +394,37 @@ export function ReelLabSettingsPage({
             }}
           >
             <div className="field">
-              <label htmlFor="claude-key-in">API Key de Anthropic (en este dispositivo)</label>
-              <div className="row" style={{ gap: 6 }}>
-                <input
-                  id="claude-key-in"
-                  type={showKey ? 'text' : 'password'}
-                  className="input"
-                  placeholder="sk-ant-..."
-                  value={aiCfg.claudeApiKey}
-                  onChange={(e) =>
-                    setAiCfg((prev) => ({ ...prev, claudeApiKey: e.target.value }))
-                  }
-                />
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label="Mostrar u ocultar clave"
-                  onClick={() => setShowKey((v) => !v)}
-                >
-                  {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
+              <label htmlFor="claude-key-in">API Key de Anthropic</label>
+              {vaultStatus.claude.configured && (
+                <div className="row-between" style={{ fontSize: '0.8rem', marginBottom: 4 }}>
+                  <span style={{ color: '#34d399' }}>
+                    🔒 Clave cifrada y oculta en Supabase ({vaultStatus.claude.hint})
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ minHeight: 24, padding: '2px 6px', fontSize: '0.75rem', color: '#f87171' }}
+                    onClick={() => void handleClearVaultKey('claude')}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              )}
+              <input
+                id="claude-key-in"
+                type="password"
+                autoComplete="off"
+                className="input"
+                placeholder={
+                  vaultStatus.claude.configured
+                    ? 'Pega otra clave solo si quieres reemplazarla...'
+                    : 'sk-ant-...'
+                }
+                value={aiCfg.claudeApiKey}
+                onChange={(e) =>
+                  setAiCfg((prev) => ({ ...prev, claudeApiKey: e.target.value }))
+                }
+              />
             </div>
 
             <div className="field">
@@ -326,8 +447,115 @@ export function ReelLabSettingsPage({
           </div>
         )}
 
+        {/* Trends Source Selector */}
+        <div
+          style={{
+            background: 'var(--bg-input)',
+            padding: 12,
+            borderRadius: 10,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10
+          }}
+        >
+          <div className="row">
+            <Globe size={16} color="#38bdf8" />
+            <strong style={{ fontSize: '0.9rem' }}>Fuente de tendencias y memes actuales</strong>
+          </div>
+
+          <div className="grid-2">
+            <div className="field">
+              <label htmlFor="trends-src-sel">Cómo consultar tendencias</label>
+              <select
+                id="trends-src-sel"
+                className="select"
+                value={aiCfg.trendsSource}
+                onChange={(e) =>
+                  setAiCfg((prev) => ({
+                    ...prev,
+                    trendsSource: e.target.value as TrendsSource,
+                    useTrendsSearch: e.target.value !== 'off'
+                  }))
+                }
+              >
+                {TRENDS_SOURCES.map((ts) => (
+                  <option key={ts.value} value={ts.value}>
+                    {ts.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field">
+              <label htmlFor="trends-geo-sel">País para Google Trends</label>
+              <select
+                id="trends-geo-sel"
+                className="select"
+                value={aiCfg.trendsGeo}
+                onChange={(e) =>
+                  setAiCfg((prev) => ({ ...prev, trendsGeo: e.target.value }))
+                }
+              >
+                {TRENDS_GEOS.map((g) => (
+                  <option key={g.code} value={g.code}>
+                    {g.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {(aiCfg.trendsSource === 'tavily' || aiCfg.trendsSource === 'auto') && (
+            <div className="field">
+              <div className="row-between">
+                <label htmlFor="tavily-key-in">
+                  API Key gratuita de Tavily (opcional · 1,000 búsquedas/mes sin tarjeta)
+                </label>
+                <a
+                  href="https://app.tavily.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: '#38bdf8', fontSize: '0.76rem' }}
+                >
+                  Obtener gratis →
+                </a>
+              </div>
+              {vaultStatus.tavily.configured && (
+                <div className="row-between" style={{ fontSize: '0.8rem', marginBottom: 4 }}>
+                  <span style={{ color: '#34d399' }}>
+                    🔒 Clave Tavily cifrada ({vaultStatus.tavily.hint})
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ minHeight: 24, padding: '2px 6px', fontSize: '0.75rem', color: '#f87171' }}
+                    onClick={() => void handleClearVaultKey('tavily')}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              )}
+              <input
+                id="tavily-key-in"
+                type="password"
+                autoComplete="off"
+                className="input"
+                placeholder={
+                  vaultStatus.tavily.configured
+                    ? 'Pega otra clave solo si quieres reemplazarla...'
+                    : 'tvly-...'
+                }
+                value={aiCfg.tavilyApiKey}
+                onChange={(e) =>
+                  setAiCfg((prev) => ({ ...prev, tavilyApiKey: e.target.value }))
+                }
+              />
+            </div>
+          )}
+        </div>
+
         <div className="field">
-          <label htmlFor="ai-region-in">Mercado / País para tendencias y lenguaje</label>
+          <label htmlFor="ai-region-in">Mercado / País para lenguaje</label>
           <input
             id="ai-region-in"
             className="input"
@@ -345,7 +573,7 @@ export function ReelLabSettingsPage({
             id="brand-ctx-in"
             className="textarea"
             rows={3}
-            placeholder="Ej. Somos NOXA / Logitrafiker, vendemos... Cliente ideal... Tono cercano, directo y sin rodeos."
+            placeholder="Ej. Marca, producto/servicio, cliente ideal y tono..."
             value={brandCtx}
             onChange={(e) => setBrandCtx(e.target.value)}
           />
@@ -385,16 +613,26 @@ export function ReelLabSettingsPage({
             onClick={() => void handleTestAI()}
           >
             <CheckCircle2 size={15} color="#34d399" />
-            {testingAI ? 'Probando...' : 'Probar conexión'}
+            {testingAI ? 'Probando IA...' : 'Probar IA'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={testingTrends}
+            onClick={() => void handleTestTrends()}
+          >
+            <Globe size={15} color="#38bdf8" />
+            {testingTrends ? 'Probando...' : 'Probar tendencias'}
           </button>
           <button
             type="button"
             className="btn btn-primary btn-sm"
             style={{ flex: 1 }}
-            onClick={handleSaveAI}
+            disabled={savingAI}
+            onClick={() => void handleSaveAI()}
           >
             <Save size={15} />
-            Guardar configuración IA
+            {savingAI ? 'Guardando y sincronizando...' : 'Guardar para todo el equipo'}
           </button>
         </div>
       </div>

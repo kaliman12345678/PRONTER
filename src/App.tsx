@@ -23,6 +23,7 @@ import {
   getStoredActiveUser,
   setStoredActiveUser
 } from './db/reellabService';
+import { initAIConfigSync } from './services/aiGenerator';
 import { ProcesoGuideModal } from './components/ProcesoGuideModal';
 import { StoryboardView } from './components/StoryboardView';
 import { UserSelectorModal } from './components/UserSelectorModal';
@@ -189,6 +190,7 @@ export function App() {
 
   useEffect(() => {
     if (typeof import.meta !== 'undefined' && import.meta.env?.MODE === 'test') return;
+    initAIConfigSync();
     void loadUsers();
     const unsub = subscribeToCloudSync(() => {
       void refreshAll();

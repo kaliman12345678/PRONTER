@@ -1,7 +1,14 @@
-import { getSupabaseClient } from '../db/cloudSync';
+import {
+  getSpaceKey,
+  getSupabaseClient,
+  pushAIConfigToCloud,
+  registerAIConfigSyncAdapter,
+  type SyncedAIConfigData
+} from '../db/cloudSync';
 import type { BloqueStoryboard, GanchoTipo } from '../types/reellab';
 
 export type AIProvider = 'gemini' | 'claude-edge' | 'claude-direct';
+export type TrendsSource = 'auto' | 'trends-rss' | 'tavily' | 'gemini-search' | 'off';
 
 export interface AIConfig {
   provider: AIProvider;
@@ -9,9 +16,26 @@ export interface AIConfig {
   geminiModel: string;
   claudeApiKey: string;
   claudeModel: string;
+  trendsSource: TrendsSource;
+  trendsGeo: string;
+  tavilyApiKey: string;
   useTrendsSearch: boolean;
   marketRegion: string;
   expertPersona: string;
+  updatedAt?: number;
+  updatedBy?: string;
+}
+
+export interface VaultKeyState {
+  configured: boolean;
+  hint: string;
+}
+
+export interface TeamVaultStatus {
+  deployed: boolean;
+  gemini: VaultKeyState;
+  tavily: VaultKeyState;
+  claude: VaultKeyState;
 }
 
 export interface GroundingSource {
@@ -46,8 +70,11 @@ export interface GeneratedIdeaItem {
 export interface AIGenerationMeta {
   providerLabel: string;
   trendSummary?: string;
+  trendSourceLabel?: string;
   sources: GroundingSource[];
 }
+
+export const AI_CONFIG_CHANGED_EVENT = 'pronter-ai-config-changed';
 
 export const DEFAULT_EXPERT_PERSONA = `Eres un director creativo y estratega senior en marketing digital, viralidad orgánica y cultura de internet (Reels, TikTok y Shorts).
 Tu método:
@@ -68,6 +95,29 @@ export const GEMINI_MODELS = [
   { id: 'gemini-4-neon', label: 'Gemini 4 Neon (Frontier · Créditos Pro)' }
 ];
 
+export const CLAUDE_MODELS = [
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Alta calidad)' },
+  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (Más económico)' }
+];
+
+export const TRENDS_SOURCES: { value: TrendsSource; label: string }[] = [
+  { value: 'auto', label: 'Automático (Trends + News gratis / Tavily si hay clave)' },
+  { value: 'trends-rss', label: 'Google Trends + Google News RSS (Gratis $0 · Supabase)' },
+  { value: 'tavily', label: 'Tavily Search IA (Gratis 1,000/mes sin tarjeta)' },
+  { value: 'gemini-search', label: 'Google Search nativo de Gemini (Créditos Pro / Billing)' },
+  { value: 'off', label: 'Desactivado (sin búsqueda web previa)' }
+];
+
+export const TRENDS_GEOS = [
+  { code: 'CO', label: 'Colombia (CO)' },
+  { code: 'MX', label: 'México (MX)' },
+  { code: 'ES', label: 'España (ES)' },
+  { code: 'AR', label: 'Argentina (AR)' },
+  { code: 'CL', label: 'Chile (CL)' },
+  { code: 'PE', label: 'Perú (PE)' },
+  { code: 'US', label: 'Estados Unidos (US)' }
+];
+
 const FREE_TIER_FALLBACKS = [
   'gemini-3.6-flash',
   'gemini-3.8-flash',
@@ -75,10 +125,11 @@ const FREE_TIER_FALLBACKS = [
   'gemini-3.1-flash-lite'
 ];
 
-export const CLAUDE_MODELS = [
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Alta calidad)' },
-  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (Más económico)' }
-];
+function emitConfigChanged(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AI_CONFIG_CHANGED_EVENT));
+  }
+}
 
 export function getBrandContext(): string {
   try {
@@ -103,9 +154,14 @@ export function getAIConfig(): AIConfig {
     geminiModel: 'gemini-4-hydrogen',
     claudeApiKey: '',
     claudeModel: 'claude-sonnet-4-6',
+    trendsSource: 'auto',
+    trendsGeo: 'CO',
+    tavilyApiKey: '',
     useTrendsSearch: true,
     marketRegion: 'Colombia y Latinoamérica',
-    expertPersona: DEFAULT_EXPERT_PERSONA
+    expertPersona: DEFAULT_EXPERT_PERSONA,
+    updatedAt: 0,
+    updatedBy: ''
   };
   try {
     const raw = localStorage.getItem(AI_CONFIG_KEY);
@@ -115,10 +171,14 @@ export function getAIConfig(): AIConfig {
       parsed.geminiModel === 'gemini-2.5-flash' || parsed.geminiModel === 'gemini-2.5-pro'
         ? defaults.geminiModel
         : parsed.geminiModel;
+    const migratedTrendsSource: TrendsSource =
+      parsed.trendsSource || (parsed.useTrendsSearch === false ? 'off' : 'auto');
     return {
       ...defaults,
       ...parsed,
       geminiModel: migratedModel || defaults.geminiModel,
+      trendsSource: migratedTrendsSource,
+      trendsGeo: parsed.trendsGeo || defaults.trendsGeo,
       expertPersona: parsed.expertPersona?.trim() || DEFAULT_EXPERT_PERSONA,
       marketRegion: parsed.marketRegion?.trim() || defaults.marketRegion
     };
@@ -130,9 +190,79 @@ export function getAIConfig(): AIConfig {
 export function saveAIConfig(config: AIConfig): void {
   try {
     localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(config));
+    emitConfigChanged();
   } catch {
     // ignore
   }
+}
+
+function toSyncedPayload(cfg: AIConfig, brandCtx: string): SyncedAIConfigData {
+  return {
+    provider: cfg.provider,
+    geminiModel: cfg.geminiModel,
+    claudeModel: cfg.claudeModel,
+    trendsSource: cfg.trendsSource,
+    trendsGeo: cfg.trendsGeo,
+    marketRegion: cfg.marketRegion,
+    expertPersona: cfg.expertPersona,
+    brandContext: brandCtx.trim(),
+    updatedAt: cfg.updatedAt || Date.now(),
+    updatedBy: cfg.updatedBy
+  };
+}
+
+export function applyRemoteSyncedAIConfig(remote: SyncedAIConfigData): boolean {
+  const current = getAIConfig();
+  const next: AIConfig = {
+    ...current,
+    provider: remote.provider || current.provider,
+    geminiModel: remote.geminiModel || current.geminiModel,
+    claudeModel: remote.claudeModel || current.claudeModel,
+    trendsSource: remote.trendsSource || current.trendsSource,
+    trendsGeo: remote.trendsGeo || current.trendsGeo,
+    useTrendsSearch: (remote.trendsSource || current.trendsSource) !== 'off',
+    marketRegion: remote.marketRegion || current.marketRegion,
+    expertPersona: remote.expertPersona?.trim() || current.expertPersona,
+    updatedAt: remote.updatedAt,
+    updatedBy: remote.updatedBy || current.updatedBy
+  };
+  if (typeof remote.brandContext === 'string') {
+    setBrandContext(remote.brandContext);
+  }
+  saveAIConfig(next);
+  return true;
+}
+
+export function initAIConfigSync(): void {
+  registerAIConfigSyncAdapter({
+    getLocalUpdatedAt: () => getAIConfig().updatedAt || 0,
+    getSyncPayload: () => toSyncedPayload(getAIConfig(), getBrandContext()),
+    applyRemote: applyRemoteSyncedAIConfig
+  });
+}
+
+// Register immediately on module load
+initAIConfigSync();
+
+/**
+ * Saves AI settings locally AND propagates non-secret config to all team devices via Supabase.
+ */
+export async function saveAndSyncAIConfig(
+  config: AIConfig,
+  brandCtx: string,
+  updatedBy?: string
+): Promise<{ synced: boolean }> {
+  const now = Date.now();
+  const next: AIConfig = {
+    ...config,
+    useTrendsSearch: config.trendsSource !== 'off',
+    updatedAt: now,
+    updatedBy: updatedBy || config.updatedBy || undefined
+  };
+  setBrandContext(brandCtx);
+  saveAIConfig(next);
+  const synced = await pushAIConfigToCloud(toSyncedPayload(next, brandCtx));
+  return { synced };
 }
 
 export function getActiveProviderLabel(cfg = getAIConfig()): string {
@@ -145,6 +275,80 @@ export function getActiveProviderLabel(cfg = getAIConfig()): string {
     return cfg.claudeModel.includes('haiku') ? 'Claude Haiku (Directo)' : 'Claude Sonnet (Directo)';
   }
   return 'Claude (Servidor)';
+}
+
+function formatUsedModelLabel(cfg: AIConfig, modelUsed: string): string {
+  const base = getActiveProviderLabel(cfg);
+  if (modelUsed === cfg.geminiModel) return base;
+  const fallbackMatch = GEMINI_MODELS.find((m) => m.id === modelUsed);
+  const fallbackName = fallbackMatch ? fallbackMatch.label.split(' (')[0] : modelUsed;
+  return `${fallbackName} (respaldo de ${base})`;
+}
+
+// ---------- Encrypted Team Vault via Supabase Edge Function (ai-proxy) ----------
+
+export async function getTeamVaultStatus(): Promise<TeamVaultStatus> {
+  const empty: TeamVaultStatus = {
+    deployed: false,
+    gemini: { configured: false, hint: '' },
+    tavily: { configured: false, hint: '' },
+    claude: { configured: false, hint: '' }
+  };
+  const client = getSupabaseClient();
+  if (!client) return empty;
+  try {
+    const { data, error } = await client.functions.invoke('ai-proxy', {
+      body: { action: 'status', spaceKey: getSpaceKey() }
+    });
+    if (error || !data || data.error) return empty;
+    return {
+      deployed: true,
+      gemini: data.gemini || { configured: false, hint: '' },
+      tavily: data.tavily || { configured: false, hint: '' },
+      claude: data.claude || { configured: false, hint: '' }
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export async function saveEncryptedTeamKey(
+  keyName: 'gemini' | 'tavily' | 'claude',
+  apiKey: string
+): Promise<{ hint: string }> {
+  const client = getSupabaseClient();
+  if (!client) throw new Error('Sin conexión a Supabase');
+  const { data, error } = await client.functions.invoke('ai-proxy', {
+    body: {
+      action: 'save_key',
+      spaceKey: getSpaceKey(),
+      keyName,
+      apiKey: apiKey.trim()
+    }
+  });
+  if (error) {
+    throw new Error(
+      `No se pudo cifrar en Supabase (${error.message}). Despliega la Edge Function ai-proxy primero.`
+    );
+  }
+  if (data?.error) throw new Error(String(data.error));
+  return { hint: String(data?.hint || '••••') };
+}
+
+export async function clearEncryptedTeamKey(
+  keyName: 'gemini' | 'tavily' | 'claude'
+): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  const { data, error } = await client.functions.invoke('ai-proxy', {
+    body: {
+      action: 'clear_key',
+      spaceKey: getSpaceKey(),
+      keyName
+    }
+  });
+  if (error) throw new Error(error.message);
+  if (data?.error) throw new Error(String(data.error));
 }
 
 function stripMarkdownFences(text: string): string {
@@ -247,28 +451,64 @@ async function callGeminiSingleModel(input: {
   return { status: res.status, text, sources };
 }
 
-async function callGeminiREST(input: {
-  apiKey: string;
-  model: string;
+async function callGeminiUnified(input: {
+  cfg: AIConfig;
   systemPrompt?: string;
   userPrompt: string;
   jsonMode?: boolean;
   useSearch?: boolean;
 }): Promise<{ text: string; sources: GroundingSource[]; modelUsed: string }> {
+  const localKey = input.cfg.geminiApiKey.trim();
+  if (!localKey) {
+    // Use encrypted server vault via Supabase ai-proxy (teammates never see the key)
+    const client = getSupabaseClient();
+    if (!client) {
+      throw new Error('Falta clave de Gemini o conexión con Supabase.');
+    }
+    const { data, error } = await client.functions.invoke('ai-proxy', {
+      body: {
+        action: 'call_gemini',
+        spaceKey: getSpaceKey(),
+        model: input.cfg.geminiModel,
+        systemPrompt: input.systemPrompt || '',
+        userPrompt: input.userPrompt,
+        jsonMode: Boolean(input.jsonMode),
+        useSearch: Boolean(input.useSearch)
+      }
+    });
+    if (error) {
+      throw new Error(
+        `No hay clave local de Gemini y el proxy del equipo no respondió (${error.message}).`
+      );
+    }
+    if (data?.error) throw new Error(String(data.error));
+    return {
+      text: String(data?.text || ''),
+      sources: (data?.sources || []) as GroundingSource[],
+      modelUsed: String(data?.modelUsed || input.cfg.geminiModel)
+    };
+  }
+
   const candidates = [
-    input.model,
-    ...FREE_TIER_FALLBACKS.filter((m) => m !== input.model)
+    input.cfg.geminiModel,
+    ...FREE_TIER_FALLBACKS.filter((m) => m !== input.cfg.geminiModel)
   ];
 
   let lastError = '';
   for (let i = 0; i < candidates.length; i++) {
     const m = candidates[i];
-    const result = await callGeminiSingleModel({ ...input, model: m });
+    const result = await callGeminiSingleModel({
+      apiKey: localKey,
+      model: m,
+      systemPrompt: input.systemPrompt,
+      userPrompt: input.userPrompt,
+      jsonMode: input.jsonMode,
+      useSearch: input.useSearch
+    });
     if (result.status >= 200 && result.status < 300) {
       return { text: result.text, sources: result.sources, modelUsed: m };
     }
     lastError = `Error de Gemini (${result.status} en ${m}): ${result.errorMsg || 'Error'}`;
-    // Cascade to next backup model on 503 overload, 429 per-model quota, or 404 deprecated model
     const shouldRetry =
       !input.useSearch && (result.status === 503 || result.status === 429 || result.status === 404);
     if (!shouldRetry) {
@@ -278,22 +518,39 @@ async function callGeminiREST(input: {
   throw new Error(lastError);
 }
 
-async function callClaudeDirectREST(input: {
-  apiKey: string;
-  model: string;
+async function callClaudeDirectUnified(input: {
+  cfg: AIConfig;
   systemPrompt: string;
   userPrompt: string;
 }): Promise<string> {
+  const localKey = input.cfg.claudeApiKey.trim();
+  if (!localKey) {
+    const client = getSupabaseClient();
+    if (!client) throw new Error('Falta API Key de Claude o conexión con Supabase.');
+    const { data, error } = await client.functions.invoke('ai-proxy', {
+      body: {
+        action: 'call_claude',
+        spaceKey: getSpaceKey(),
+        model: input.cfg.claudeModel,
+        systemPrompt: input.systemPrompt,
+        userPrompt: input.userPrompt
+      }
+    });
+    if (error) throw new Error(error.message);
+    if (data?.error) throw new Error(String(data.error));
+    return String(data?.text || '');
+  }
+
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
-      'x-api-key': input.apiKey.trim(),
+      'x-api-key': localKey,
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
       'anthropic-dangerous-direct-browser-access': 'true'
     },
     body: JSON.stringify({
-      model: input.model,
+      model: input.cfg.claudeModel,
       max_tokens: 4096,
       system: input.systemPrompt,
       messages: [{ role: 'user', content: input.userPrompt }]
@@ -354,59 +611,210 @@ async function callClaudeEdge(input: {
   return bloques;
 }
 
-/**
- * Phase 1 (Gemini Grounding): Searches real-time Google trends, news, and memes.
- */
-export async function researchTrendsWithGemini(
+// ---------- Multi-source Live Trends Fetchers ----------
+
+async function fetchGoogleTrendsRss(
+  topic: string,
+  geo: string
+): Promise<{ summary: string; sources: GroundingSource[] }> {
+  const client = getSupabaseClient();
+  if (!client) return { summary: '', sources: [] };
+  try {
+    const { data, error } = await client.functions.invoke('tendencias-hoy', {
+      body: { topic, geo }
+    });
+    if (error || !data || data.error) return { summary: '', sources: [] };
+    const trending = (data.trendingNow || []) as string[];
+    const news = (data.nicheNews || []) as Array<{ title: string; link: string }>;
+    const lines: string[] = [];
+    if (trending.length > 0) {
+      lines.push(`Tendencias de hoy en Google (${geo}): ${trending.slice(0, 8).join(' · ')}`);
+    }
+    if (news.length > 0) {
+      lines.push(
+        'Noticias y temas recientes:\n' +
+          news
+            .slice(0, 5)
+            .map((n) => `- ${n.title}`)
+            .join('\n')
+      );
+    }
+    return {
+      summary: lines.join('\n\n'),
+      sources: (data.sources || []) as GroundingSource[]
+    };
+  } catch {
+    return { summary: '', sources: [] };
+  }
+}
+
+async function fetchTavilyTrends(
+  topic: string,
+  cfg: AIConfig
+): Promise<{ summary: string; sources: GroundingSource[] }> {
+  const query = `tendencias virales memes noticias recientes ${topic} ${cfg.marketRegion}`.trim();
+  const localKey = cfg.tavilyApiKey.trim();
+
+  try {
+    let data: {
+      answer?: string;
+      results?: Array<{ title?: string; url?: string; content?: string }>;
+    } | null = null;
+
+    if (localKey) {
+      const res = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: localKey,
+          query,
+          topic: 'news',
+          days: 7,
+          max_results: 6,
+          include_answer: true
+        })
+      });
+      if (res.ok) data = await res.json();
+    } else {
+      const client = getSupabaseClient();
+      if (client) {
+        const res = await client.functions.invoke('ai-proxy', {
+          body: { action: 'call_tavily', spaceKey: getSpaceKey(), query }
+        });
+        if (!res.error && res.data && !res.data.error) {
+          data = res.data;
+        }
+      }
+    }
+
+    if (!data) return { summary: '', sources: [] };
+
+    const lines: string[] = [];
+    if (data.answer) lines.push(data.answer);
+    const results = data.results || [];
+    for (const r of results.slice(0, 5)) {
+      if (r.title) lines.push(`- ${r.title}: ${(r.content || '').slice(0, 140)}`);
+    }
+    const sources: GroundingSource[] = results
+      .filter((r) => r.url && r.title)
+      .slice(0, 5)
+      .map((r) => ({ title: r.title!, uri: r.url! }));
+
+    return { summary: lines.join('\n'), sources };
+  } catch {
+    return { summary: '', sources: [] };
+  }
+}
+
+async function fetchGeminiSearchTrends(
   topic: string,
   cfg: AIConfig,
   brandContext: string
 ): Promise<{ summary: string; sources: GroundingSource[] }> {
-  if (cfg.provider !== 'gemini' || !cfg.geminiApiKey.trim()) {
-    return { summary: '', sources: [] };
-  }
-
+  if (cfg.provider !== 'gemini') return { summary: '', sources: [] };
   const today = new Date().toISOString().slice(0, 10);
   const searchPrompt = [
     `Hoy es ${today}. Investiga en Google tendencias actuales, noticias recientes, temas virales, formatos y memes vigentes en ${cfg.marketRegion} relevantes para crear videos cortos (Reels/TikTok) sobre:`,
     `Tema: ${topic}`,
     brandContext ? `Marca / negocio: ${brandContext}` : '',
-    'Devuelve en español un resumen práctico (máximo 8 viñetas) con: 1) tendencias/noticias reales recientes aprovechables, 2) memes o referencias culturales vigentes que encajen con humor o contexto, y 3) ángulos que estén generando debate o comentarios.'
+    'Devuelve en español un resumen práctico (máximo 8 viñetas) con tendencias/noticias y memes aprovechables.'
   ]
     .filter(Boolean)
     .join('\n');
 
   try {
-    const res = await callGeminiREST({
-      apiKey: cfg.geminiApiKey,
-      model: cfg.geminiModel,
+    const res = await callGeminiUnified({
+      cfg,
       userPrompt: searchPrompt,
       jsonMode: false,
       useSearch: true
     });
     return { summary: res.text, sources: res.sources };
   } catch {
-    // Graceful fallback if grounding fails on quota or unsupported model
     return { summary: '', sources: [] };
   }
 }
 
-function formatUsedModelLabel(cfg: AIConfig, modelUsed: string): string {
-  const base = getActiveProviderLabel(cfg);
-  if (modelUsed === cfg.geminiModel) return base;
-  const fallbackMatch = GEMINI_MODELS.find((m) => m.id === modelUsed);
-  const fallbackName = fallbackMatch ? fallbackMatch.label.split(' (')[0] : modelUsed;
-  return `${fallbackName} (respaldo de ${base})`;
+/**
+ * Fetches live trends/news/memes according to configured TrendsSource.
+ * Works across both Gemini and Claude.
+ */
+export async function researchCurrentTrends(
+  topic: string,
+  cfg: AIConfig,
+  brandContext: string,
+  overrideEnabled?: boolean
+): Promise<{ summary: string; sources: GroundingSource[]; sourceLabel?: string }> {
+  if (overrideEnabled === false || cfg.trendsSource === 'off') {
+    return { summary: '', sources: [] };
+  }
+
+  const mode = cfg.trendsSource;
+
+  if (mode === 'trends-rss') {
+    const rss = await fetchGoogleTrendsRss(topic, cfg.trendsGeo);
+    return {
+      ...rss,
+      sourceLabel: rss.summary ? `Google Trends + News (${cfg.trendsGeo})` : undefined
+    };
+  }
+
+  if (mode === 'tavily') {
+    const tav = await fetchTavilyTrends(topic, cfg);
+    return { ...tav, sourceLabel: tav.summary ? 'Tavily IA' : undefined };
+  }
+
+  if (mode === 'gemini-search') {
+    const gem = await fetchGeminiSearchTrends(topic, cfg, brandContext);
+    return { ...gem, sourceLabel: gem.summary ? 'Google Search (Gemini)' : undefined };
+  }
+
+  // 'auto' mode: try free RSS + Tavily in parallel, fallback cleanly
+  const [rss, tav] = await Promise.all([
+    fetchGoogleTrendsRss(topic, cfg.trendsGeo),
+    fetchTavilyTrends(topic, cfg)
+  ]);
+
+  const parts = [tav.summary, rss.summary].filter(Boolean);
+  const labels = [
+    tav.summary ? 'Tavily' : '',
+    rss.summary ? `Google Trends (${cfg.trendsGeo})` : ''
+  ].filter(Boolean);
+  const combinedSources = [...tav.sources, ...rss.sources];
+
+  if (parts.length > 0) {
+    return {
+      summary: parts.join('\n\n'),
+      sources: combinedSources.slice(0, 6),
+      sourceLabel: labels.join(' + ')
+    };
+  }
+
+  // Last try in auto mode if paid Gemini Search is active
+  if (cfg.provider === 'gemini') {
+    const gem = await fetchGeminiSearchTrends(topic, cfg, brandContext);
+    if (gem.summary) {
+      return { ...gem, sourceLabel: 'Google Search (Gemini)' };
+    }
+  }
+
+  return { summary: '', sources: [] };
+}
+
+export async function testTrendsConnection(cfg = getAIConfig()): Promise<string> {
+  const res = await researchCurrentTrends('negocios marketing ecommerce', cfg, '', true);
+  if (!res.summary) {
+    throw new Error(
+      'No se obtuvieron tendencias. Despliega supabase/functions/tendencias-hoy o agrega una clave gratuita de Tavily.'
+    );
+  }
+  return `Tendencias activas (${res.sourceLabel || cfg.trendsSource}): ${res.sources.length} fuentes leídas.`;
 }
 
 export async function testAIConnection(cfg = getAIConfig()): Promise<string> {
   if (cfg.provider === 'gemini') {
-    if (!cfg.geminiApiKey.trim()) {
-      throw new Error('Pega primero tu API Key de Google AI Studio (AQ... o AIza...).');
-    }
-    const res = await callGeminiREST({
-      apiKey: cfg.geminiApiKey,
-      model: cfg.geminiModel,
+    const res = await callGeminiUnified({
+      cfg,
       userPrompt: 'Responde únicamente: OK',
       jsonMode: false,
       useSearch: false
@@ -415,19 +823,14 @@ export async function testAIConnection(cfg = getAIConfig()): Promise<string> {
   }
 
   if (cfg.provider === 'claude-direct') {
-    if (!cfg.claudeApiKey.trim()) {
-      throw new Error('Pega primero tu API Key de Anthropic (sk-ant-...).');
-    }
-    const text = await callClaudeDirectREST({
-      apiKey: cfg.claudeApiKey,
-      model: cfg.claudeModel,
+    const text = await callClaudeDirectUnified({
+      cfg,
       systemPrompt: 'Responde brevemente.',
       userPrompt: 'Responde únicamente: OK'
     });
     return `Conexión exitosa con ${getActiveProviderLabel(cfg)}: ${text.slice(0, 40)}`;
   }
 
-  // claude-edge test
   const blocks = await callClaudeEdge({
     titulo: 'Prueba rápida de conexión',
     textoBase: 'Devuelve exactamente 1 bloque corto de prueba.',
@@ -470,21 +873,15 @@ export async function generateScriptExpertWithAI(input: {
   const cfg = getAIConfig();
   const brandContext = getBrandContext();
   const duracion = input.duracionSegundos || 45;
-  const wantTrends = input.useTrendsOverride ?? cfg.useTrendsSearch;
+
+  const trends = await researchCurrentTrends(
+    `${input.titulo} ${input.textoBase || ''}`.trim(),
+    cfg,
+    brandContext,
+    input.useTrendsOverride
+  );
 
   if (cfg.provider === 'gemini') {
-    if (!cfg.geminiApiKey.trim()) {
-      throw new Error('Falta tu API Key de Gemini en Ajustes.');
-    }
-
-    const trends = wantTrends
-      ? await researchTrendsWithGemini(
-          `${input.titulo} ${input.textoBase || ''}`.trim(),
-          cfg,
-          brandContext
-        )
-      : { summary: '', sources: [] };
-
     const systemPrompt = `${buildSystemHeader(cfg, brandContext)}
 
 Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
@@ -524,9 +921,8 @@ Reglas:
       .filter(Boolean)
       .join('\n\n');
 
-    const res = await callGeminiREST({
-      apiKey: cfg.geminiApiKey,
-      model: cfg.geminiModel,
+    const res = await callGeminiUnified({
+      cfg,
       systemPrompt,
       userPrompt,
       jsonMode: true,
@@ -543,6 +939,7 @@ Reglas:
       meta: {
         providerLabel: formatUsedModelLabel(cfg, res.modelUsed),
         trendSummary: trends.summary || undefined,
+        trendSourceLabel: trends.sourceLabel,
         sources: trends.sources
       }
     };
@@ -551,15 +948,13 @@ Reglas:
   const enrichedBase = [
     buildSystemHeader(cfg, brandContext),
     input.textoBase || '',
-    formatHookCatalogSummary(input.hookTypes)
+    formatHookCatalogSummary(input.hookTypes),
+    trends.summary ? `Tendencias, temas y memes actuales encontrados:\n${trends.summary}` : ''
   ]
     .filter(Boolean)
     .join('\n\n');
 
   if (cfg.provider === 'claude-direct') {
-    if (!cfg.claudeApiKey.trim()) {
-      throw new Error('Falta tu API Key de Claude en Ajustes.');
-    }
     const systemPrompt = `${buildSystemHeader(cfg, brandContext)}
 Responde ÚNICAMENTE con un objeto JSON válido (sin markdown):
 {"bloques":[{"tipo":"gancho"|"historia"|"moraleja"|"cta","titulo":"...","inicio_s":0,"fin_s":4,"dialogo":"...","texto_pantalla":"...","plano":"...","camara":"...","indicaciones":"...","edicion":["..."],"sketch_prompt":"..."}]}
@@ -573,29 +968,28 @@ Apunta a ~${duracion}s (~3 palabras/segundo).`;
       input.objetivo ? `Objetivo: ${input.objetivo}` : '',
       input.ganchoTipo ? `Gancho: ${input.ganchoTipo}` : '',
       input.tono ? `Tono: ${input.tono}` : '',
-      formatHookCatalogSummary(input.hookTypes)
+      formatHookCatalogSummary(input.hookTypes),
+      trends.summary ? `Tendencias actuales:\n${trends.summary}` : ''
     ]
       .filter(Boolean)
       .join('\n');
 
-    const raw = await callClaudeDirectREST({
-      apiKey: cfg.claudeApiKey,
-      model: cfg.claudeModel,
-      systemPrompt,
-      userPrompt
-    });
-
+    const raw = await callClaudeDirectUnified({ cfg, systemPrompt, userPrompt });
     const parsed = parseJsonLenient<{ bloques?: GeneratedScriptBlock[] }>(raw);
     if (!parsed?.bloques?.length) {
       throw new Error('Claude no devolvió escenas válidas.');
     }
     return {
       bloques: parsed.bloques,
-      meta: { providerLabel: getActiveProviderLabel(cfg), sources: [] }
+      meta: {
+        providerLabel: getActiveProviderLabel(cfg),
+        trendSummary: trends.summary || undefined,
+        trendSourceLabel: trends.sourceLabel,
+        sources: trends.sources
+      }
     };
   }
 
-  // Fallback / default: Supabase Edge Function (Claude)
   const bloques = await callClaudeEdge({
     ...input,
     textoBase: enrichedBase || undefined
@@ -603,7 +997,12 @@ Apunta a ~${duracion}s (~3 palabras/segundo).`;
 
   return {
     bloques,
-    meta: { providerLabel: getActiveProviderLabel(cfg), sources: [] }
+    meta: {
+      providerLabel: getActiveProviderLabel(cfg),
+      trendSummary: trends.summary || undefined,
+      trendSourceLabel: trends.sourceLabel,
+      sources: trends.sources
+    }
   };
 }
 
@@ -619,7 +1018,6 @@ export async function generateIdeasExpertWithAI(input: {
   const cfg = getAIConfig();
   const brandContext = getBrandContext();
   const count = input.cantidad || 5;
-  const wantTrends = input.useTrendsOverride ?? cfg.useTrendsSearch;
 
   const existingHint =
     input.existingTitles && input.existingTitles.length > 0
@@ -628,15 +1026,14 @@ export async function generateIdeasExpertWithAI(input: {
           .join('\n- ')}`
       : '';
 
+  const trends = await researchCurrentTrends(
+    input.tema,
+    cfg,
+    brandContext,
+    input.useTrendsOverride
+  );
+
   if (cfg.provider === 'gemini') {
-    if (!cfg.geminiApiKey.trim()) {
-      throw new Error('Falta tu API Key de Gemini en Ajustes.');
-    }
-
-    const trends = wantTrends
-      ? await researchTrendsWithGemini(input.tema, cfg, brandContext)
-      : { summary: '', sources: [] };
-
     const systemPrompt = `${buildSystemHeader(cfg, brandContext)}
 
 Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
@@ -666,9 +1063,8 @@ Genera exactamente ${count} ideas distintas que pasen el Filtro 5-50.`;
       .filter(Boolean)
       .join('\n\n');
 
-    const res = await callGeminiREST({
-      apiKey: cfg.geminiApiKey,
-      model: cfg.geminiModel,
+    const res = await callGeminiUnified({
+      cfg,
       systemPrompt,
       userPrompt,
       jsonMode: true,
@@ -685,15 +1081,17 @@ Genera exactamente ${count} ideas distintas que pasen el Filtro 5-50.`;
       meta: {
         providerLabel: formatUsedModelLabel(cfg, res.modelUsed),
         trendSummary: trends.summary || undefined,
+        trendSourceLabel: trends.sourceLabel,
         sources: trends.sources
       }
     };
   }
 
-  // Claude (Edge or Direct) reuses structured block prompt cleanly
+  // Claude (Edge or Direct)
   const instruction = [
     `Devuelve el JSON con bloques donde cada bloque sea una idea diferente de video (titulo = titulo corto de la idea, dialogo = resumen breve de 1 a 2 frases con enfoque viral/tendencia, texto_pantalla = formato recomendado, indicaciones = palabra clave o nota de tendencia). Genera exactamente ${count} bloques cortos en el JSON.`,
-    existingHint
+    existingHint,
+    trends.summary ? `Tendencias, temas calientes y memes actuales:\n${trends.summary}` : ''
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -718,7 +1116,15 @@ Genera exactamente ${count} ideas distintas que pasen el Filtro 5-50.`;
       tendencia_usada: b.indicaciones?.trim() || undefined
     }));
 
-  return { ideas, meta: res.meta };
+  return {
+    ideas,
+    meta: {
+      ...res.meta,
+      trendSummary: trends.summary || res.meta.trendSummary,
+      trendSourceLabel: trends.sourceLabel || res.meta.trendSourceLabel,
+      sources: trends.sources.length ? trends.sources : res.meta.sources
+    }
+  };
 }
 
 export async function completeStoryboardWithAI(input: {
@@ -749,10 +1155,6 @@ export async function completeStoryboardWithAI(input: {
     .join('\n');
 
   if (cfg.provider === 'gemini') {
-    if (!cfg.geminiApiKey.trim()) {
-      throw new Error('Falta tu API Key de Gemini en Ajustes.');
-    }
-
     const systemPrompt = `${buildSystemHeader(cfg, brandContext)}
 
 Eres director de producción y storyboard para Reels/TikTok.
@@ -781,9 +1183,8 @@ Responde ÚNICAMENTE con JSON válido:
       .filter(Boolean)
       .join('\n\n');
 
-    const res = await callGeminiREST({
-      apiKey: cfg.geminiApiKey,
-      model: cfg.geminiModel,
+    const res = await callGeminiUnified({
+      cfg,
       systemPrompt,
       userPrompt,
       jsonMode: true,
@@ -811,7 +1212,6 @@ Responde ÚNICAMENTE con JSON válido:
     };
   }
 
-  // Claude (Edge or Direct) fallback reusing generateScriptExpertWithAI
   const res = await generateScriptExpertWithAI({
     titulo: `Storyboard técnico para: ${input.titulo}`,
     textoBase: `Completa plano, camara, indicaciones (nota visual), texto_pantalla y edicion para exactamente estas ${input.escenas.length} escenas en orden:\n${scenesDescription}`,

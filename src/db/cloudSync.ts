@@ -8,15 +8,61 @@ export const DEFAULT_SPACE_KEY = 'noxa-principal';
 
 const SPACE_KEY_STORAGE = 'guion-en-pantalla-space-key-v1';
 
-export type EntityType = 'project' | 'piece' | 'document';
+export type EntityType = 'project' | 'piece' | 'document' | 'ai_config';
+
+export interface SyncedAIConfigData {
+  provider: 'gemini' | 'claude-edge' | 'claude-direct';
+  geminiModel: string;
+  claudeModel: string;
+  trendsSource: 'auto' | 'trends-rss' | 'tavily' | 'gemini-search' | 'off';
+  trendsGeo: string;
+  marketRegion: string;
+  expertPersona: string;
+  brandContext: string;
+  updatedAt: number;
+  updatedBy?: string;
+}
 
 export interface CloudSyncRow {
   space_key: string;
   entity_type: EntityType;
   entity_id: string;
-  data: Project | Omit<ContentPiece, 'videoBlob'> | ScriptDocument;
+  data: Project | Omit<ContentPiece, 'videoBlob'> | ScriptDocument | SyncedAIConfigData | Record<string, unknown>;
   updated_at: number;
   deleted: boolean;
+}
+
+interface AIConfigSyncAdapter {
+  getLocalUpdatedAt: () => number;
+  getSyncPayload: () => SyncedAIConfigData;
+  applyRemote: (data: SyncedAIConfigData) => boolean;
+}
+
+let aiSyncAdapter: AIConfigSyncAdapter | null = null;
+
+export function registerAIConfigSyncAdapter(adapter: AIConfigSyncAdapter): void {
+  aiSyncAdapter = adapter;
+}
+
+export async function pushAIConfigToCloud(
+  payload: SyncedAIConfigData
+): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+    return false;
+  }
+  const { error } = await client.from('guion_sync').upsert(
+    {
+      space_key: getSpaceKey(),
+      entity_type: 'ai_config',
+      entity_id: 'global',
+      data: payload,
+      updated_at: payload.updatedAt,
+      deleted: false
+    },
+    { onConflict: 'space_key,entity_type,entity_id' }
+  );
+  return !error;
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'offline' | 'error';
@@ -114,6 +160,19 @@ export async function pushProjectDeleteCascade(
 }
 
 async function applyRemoteRow(row: CloudSyncRow): Promise<boolean> {
+  if (row.entity_type === 'ai_config') {
+    if (row.entity_id !== 'global' || row.deleted || !aiSyncAdapter) {
+      return false;
+    }
+    const remote = row.data as SyncedAIConfigData;
+    const remoteTs = row.updated_at || remote.updatedAt || 0;
+    const localTs = aiSyncAdapter.getLocalUpdatedAt();
+    if (remoteTs > localTs) {
+      return aiSyncAdapter.applyRemote({ ...remote, updatedAt: remoteTs });
+    }
+    return false;
+  }
+
   const db = await getDB();
   const storeName =
     row.entity_type === 'project'
@@ -234,6 +293,22 @@ export async function syncAllWithCloud(): Promise<{
         entity_id: d.id,
         data: d,
         updated_at: d.updatedAt,
+        deleted: false
+      });
+    }
+  }
+
+  const remoteAIConfig = remoteMap.get('ai_config:global');
+  if (aiSyncAdapter) {
+    const localTs = aiSyncAdapter.getLocalUpdatedAt();
+    if (localTs > 0 && (!remoteAIConfig || localTs > remoteAIConfig.updated_at)) {
+      const payload = aiSyncAdapter.getSyncPayload();
+      toPush.push({
+        space_key: spaceKey,
+        entity_type: 'ai_config',
+        entity_id: 'global',
+        data: payload,
+        updated_at: payload.updatedAt,
         deleted: false
       });
     }

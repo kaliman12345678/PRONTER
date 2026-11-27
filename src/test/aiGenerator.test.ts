@@ -1,36 +1,84 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyRemoteSyncedAIConfig,
   DEFAULT_EXPERT_PERSONA,
   generateIdeasExpertWithAI,
   generateScriptExpertWithAI,
   getActiveProviderLabel,
   getAIConfig,
+  getBrandContext,
   parseJsonLenient,
-  saveAIConfig
+  saveAIConfig,
+  type AIConfig
 } from '../services/aiGenerator';
 
-describe('aiGenerator dual-provider service', () => {
+function makeConfig(overrides: Partial<AIConfig> = {}): AIConfig {
+  return {
+    provider: 'claude-edge',
+    geminiApiKey: '',
+    geminiModel: 'gemini-4-hydrogen',
+    claudeApiKey: '',
+    claudeModel: 'claude-sonnet-4-6',
+    trendsSource: 'auto',
+    trendsGeo: 'CO',
+    tavilyApiKey: '',
+    useTrendsSearch: true,
+    marketRegion: 'Colombia y Latinoamérica',
+    expertPersona: DEFAULT_EXPERT_PERSONA,
+    ...overrides
+  };
+}
+
+describe('aiGenerator dual-provider & team sync service', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('defaults to claude-edge and supports switching to gemini in localStorage', () => {
+  it('defaults to claude-edge and supports switching to gemini with gemini-4-hydrogen default', () => {
     expect(getAIConfig().provider).toBe('claude-edge');
+    expect(getAIConfig().geminiModel).toBe('gemini-4-hydrogen');
     expect(getActiveProviderLabel()).toBe('Claude (Servidor)');
 
-    saveAIConfig({
-      provider: 'gemini',
-      geminiApiKey: 'AQ.test-key',
-      geminiModel: 'gemini-3.1-pro-preview',
-      claudeApiKey: '',
-      claudeModel: 'claude-sonnet-4-6',
-      useTrendsSearch: true,
-      marketRegion: 'Colombia',
-      expertPersona: DEFAULT_EXPERT_PERSONA
-    });
+    saveAIConfig(
+      makeConfig({
+        provider: 'gemini',
+        geminiApiKey: 'AQ.test-key',
+        geminiModel: 'gemini-3.1-pro-preview'
+      })
+    );
 
     expect(getAIConfig().provider).toBe('gemini');
     expect(getActiveProviderLabel()).toBe('Gemini 3.1 Pro');
+  });
+
+  it('applies remote synced AI config without overwriting local secret keys', () => {
+    saveAIConfig(
+      makeConfig({
+        provider: 'claude-edge',
+        geminiApiKey: 'AQ.local-device-key'
+      })
+    );
+
+    applyRemoteSyncedAIConfig({
+      provider: 'gemini',
+      geminiModel: 'gemini-4-hydrogen',
+      claudeModel: 'claude-sonnet-4-6',
+      trendsSource: 'tavily',
+      trendsGeo: 'MX',
+      marketRegion: 'México',
+      expertPersona: 'Experto viral MX',
+      brandContext: 'Marca demo MX',
+      updatedAt: 123456,
+      updatedBy: 'Juan Vargas'
+    });
+
+    const updated = getAIConfig();
+    expect(updated.provider).toBe('gemini');
+    expect(updated.trendsSource).toBe('tavily');
+    expect(updated.trendsGeo).toBe('MX');
+    expect(updated.updatedBy).toBe('Juan Vargas');
+    expect(updated.geminiApiKey).toBe('AQ.local-device-key');
+    expect(getBrandContext()).toBe('Marca demo MX');
   });
 
   it('parses lenient JSON even with markdown code fences', () => {
@@ -38,21 +86,18 @@ describe('aiGenerator dual-provider service', () => {
     expect(res).toEqual({ ok: true });
   });
 
-  it('runs 2-phase Gemini Google Search grounding + JSON script generation', async () => {
-    saveAIConfig({
-      provider: 'gemini',
-      geminiApiKey: 'AQ.test-key',
-      geminiModel: 'gemini-3.6-flash',
-      claudeApiKey: '',
-      claudeModel: 'claude-sonnet-4-6',
-      useTrendsSearch: true,
-      marketRegion: 'Colombia y Latinoamérica',
-      expertPersona: DEFAULT_EXPERT_PERSONA
-    });
+  it('runs 2-phase Gemini Search Grounding + JSON script generation', async () => {
+    saveAIConfig(
+      makeConfig({
+        provider: 'gemini',
+        geminiApiKey: 'AQ.test-key',
+        geminiModel: 'gemini-3.6-flash',
+        trendsSource: 'gemini-search'
+      })
+    );
 
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      // Phase 1: Google Search grounding
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -68,7 +113,6 @@ describe('aiGenerator dual-provider service', () => {
           { status: 200 }
         )
       )
-      // Phase 2: Strict JSON script generation
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -123,16 +167,14 @@ describe('aiGenerator dual-provider service', () => {
   });
 
   it('falls back in order from gemini-4-hydrogen to gemini-3.6-flash on 503 overload', async () => {
-    saveAIConfig({
-      provider: 'gemini',
-      geminiApiKey: 'AQ.test-key',
-      geminiModel: 'gemini-4-hydrogen',
-      claudeApiKey: '',
-      claudeModel: 'claude-sonnet-4-6',
-      useTrendsSearch: false,
-      marketRegion: 'Colombia',
-      expertPersona: DEFAULT_EXPERT_PERSONA
-    });
+    saveAIConfig(
+      makeConfig({
+        provider: 'gemini',
+        geminiApiKey: 'AQ.test-key',
+        geminiModel: 'gemini-4-hydrogen',
+        trendsSource: 'off'
+      })
+    );
 
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
@@ -178,56 +220,63 @@ describe('aiGenerator dual-provider service', () => {
     expect(res.meta.providerLabel).toBe('Gemini 3.6 Flash (respaldo de Gemini 4 Hydrogen)');
   });
 
-  it('generates structured ideas with Gemini without search when disabled', async () => {
-    saveAIConfig({
-      provider: 'gemini',
-      geminiApiKey: 'AQ.test-key',
-      geminiModel: 'gemini-3.6-flash',
-      claudeApiKey: '',
-      claudeModel: 'claude-sonnet-4-6',
-      useTrendsSearch: false,
-      marketRegion: 'Colombia',
-      expertPersona: DEFAULT_EXPERT_PERSONA
-    });
-
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          candidates: [
-            {
-              content: {
-                parts: [
-                  {
-                    text: JSON.stringify({
-                      ideas: [
-                        {
-                          titulo: '3 errores al importar',
-                          texto_base: 'Evita perder margen en tu primer envío.',
-                          pilar: 'Importación',
-                          formato: 'Hablando a cámara',
-                          palabras_clave: 'IMPORTAR',
-                          nivel_conciencia: 1
-                        }
-                      ]
-                    })
-                  }
-                ]
-              }
-            }
-          ]
-        }),
-        { status: 200 }
-      )
+  it('uses Tavily free trends search before generating ideas with Gemini', async () => {
+    saveAIConfig(
+      makeConfig({
+        provider: 'gemini',
+        geminiApiKey: 'AQ.test-key',
+        geminiModel: 'gemini-3.6-flash',
+        trendsSource: 'tavily',
+        tavilyApiKey: 'tvly-test-key'
+      })
     );
 
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            answer: 'Tendencia fuerte en envíos gratis esta semana',
+            results: [{ title: 'Noticia Ecommerce', url: 'https://news.example/1', content: 'Detalle' }]
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        ideas: [
+                          {
+                            titulo: 'Envíos gratis que sí dan margen',
+                            texto_base: 'Aprovecha la tendencia semanal.'
+                          }
+                        ]
+                      })
+                    }
+                  ]
+                }
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
     const res = await generateIdeasExpertWithAI({
-      tema: 'Importaciones',
-      cantidad: 1,
-      useTrendsOverride: false
+      tema: 'Ecommerce',
+      cantidad: 1
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(res.ideas).toHaveLength(1);
-    expect(res.ideas[0].titulo).toBe('3 errores al importar');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('api.tavily.com/search');
+    expect(res.meta.trendSourceLabel).toBe('Tavily IA');
+    expect(res.meta.sources[0].uri).toBe('https://news.example/1');
+    expect(res.ideas[0].titulo).toBe('Envíos gratis que sí dan margen');
   });
 });

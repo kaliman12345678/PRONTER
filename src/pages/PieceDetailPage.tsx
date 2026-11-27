@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronRight, FilePlus2, FileText, FileUp, Sparkles, Trash2 } from 'lucide-react';
 import { ReferenceVideoSection } from '../components/ReferenceVideoSection';
 import { createId } from '../db/database';
 import { generateScriptWithAI } from '../db/reellabService';
-import { getActiveProviderLabel } from '../services/aiGenerator';
+import { AI_CONFIG_CHANGED_EVENT, getActiveProviderLabel } from '../services/aiGenerator';
 import {
   DOCUMENT_TYPES,
   type ContentPiece,
@@ -68,6 +68,13 @@ export function PieceDetailPage({
   const [aiTone, setAiTone] = useState('Cercano, directo y natural');
   const [aiSeconds, setAiSeconds] = useState(45);
   const [aiLoading, setAiLoading] = useState(false);
+  const [providerLabel, setProviderLabel] = useState(() => getActiveProviderLabel());
+
+  useEffect(() => {
+    const onChange = () => setProviderLabel(getActiveProviderLabel());
+    window.addEventListener(AI_CONFIG_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(AI_CONFIG_CHANGED_EVENT, onChange);
+  }, []);
 
   const handleGenerateAI = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -149,7 +156,7 @@ export function PieceDetailPage({
               <Sparkles size={18} color="#a78bfa" />
               <strong>Generar guion con Experto IA</strong>
             </div>
-            <span className="badge estructura">{getActiveProviderLabel()}</span>
+            <span className="badge estructura">{providerLabel}</span>
           </div>
           <div className="field">
             <label htmlFor="ai-topic">¿De qué trata el video o qué quieres decir?</label>

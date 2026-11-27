@@ -37,6 +37,7 @@ import {
   updateIdea
 } from '../db/reellabService';
 import {
+  AI_CONFIG_CHANGED_EVENT,
   getActiveProviderLabel,
   getAIConfig,
   type AIGenerationMeta
@@ -145,9 +146,21 @@ export function IdeasPage({
   const [aiIdeasTopic, setAiIdeasTopic] = useState('');
   const [aiIdeasCount, setAiIdeasCount] = useState(5);
   const [aiIdeasPilar, setAiIdeasPilar] = useState('');
-  const [aiUseTrends, setAiUseTrends] = useState(() => getAIConfig().useTrendsSearch);
+  const [aiProviderLabel, setAiProviderLabel] = useState(() => getActiveProviderLabel());
+  const [aiUseTrends, setAiUseTrends] = useState(
+    () => getAIConfig().trendsSource !== 'off'
+  );
   const [aiTrendMeta, setAiTrendMeta] = useState<AIGenerationMeta | null>(null);
   const [generatingAIIdeas, setGeneratingAIIdeas] = useState(false);
+
+  useEffect(() => {
+    const syncLabels = () => {
+      setAiProviderLabel(getActiveProviderLabel());
+      setAiUseTrends(getAIConfig().trendsSource !== 'off');
+    };
+    window.addEventListener(AI_CONFIG_CHANGED_EVENT, syncLabels);
+    return () => window.removeEventListener(AI_CONFIG_CHANGED_EVENT, syncLabels);
+  }, []);
 
   // Excel preview modal
   const [excelRows, setExcelRows] = useState<ExcelPreviewRow[] | null>(null);
@@ -640,7 +653,7 @@ export function IdeasPage({
               <Sparkles size={18} color="#a78bfa" />
               <strong>Generar ideas con Experto IA</strong>
             </div>
-            <span className="badge estructura">{getActiveProviderLabel()}</span>
+            <span className="badge estructura">{aiProviderLabel}</span>
           </div>
           <div className="field">
             <label htmlFor="ai-ideas-topic">
@@ -687,14 +700,14 @@ export function IdeasPage({
               </select>
             </div>
           </div>
-          {getAIConfig().provider === 'gemini' && (
+          {getAIConfig().trendsSource !== 'off' && (
             <label className="row" style={{ gap: 8, fontSize: '0.84rem', cursor: 'pointer' }}>
               <input
                 type="checkbox"
                 checked={aiUseTrends}
                 onChange={(e) => setAiUseTrends(e.target.checked)}
               />
-              Consultar tendencias, temas del momento y memes en Google antes de generar
+              Consultar tendencias, temas del momento y memes actuales antes de generar
             </label>
           )}
           <div className="row">
