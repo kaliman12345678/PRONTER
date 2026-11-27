@@ -899,9 +899,17 @@ export async function generateScriptWithAI(input: {
   });
 
   if (error) {
-    throw new Error(
-      `No se pudo conectar con la función de IA en Supabase (${error.message}). Asegúrate de haber desplegado "generar-guion" y guardado ANTHROPIC_API_KEY.`
-    );
+    let detail = error.message;
+    try {
+      const ctx = (error as { context?: Response }).context;
+      if (ctx && typeof ctx.json === 'function') {
+        const errBody = (await ctx.json()) as { error?: string };
+        if (errBody?.error) detail = errBody.error;
+      }
+    } catch {
+      // ignore parse errors
+    }
+    throw new Error(detail);
   }
 
   if (data?.error) {
@@ -925,34 +933,30 @@ export async function generateIdeasWithAI(input: {
   const count = input.cantidad || 5;
   const brandContext = getBrandContext();
   const prompt = [
-    `INSTRUCCIÓN ESPECIAL: No escribas un solo guion. Genera exactamente ${count} IDEAS DIFERENTES de videos cortos sobre: "${input.tema}".`,
-    `En el JSON "bloques", cada elemento debe representar UNA IDEA distinta:`,
-    `- titulo: Título atractivo de la idea`,
-    `- dialogo: Resumen concreto de qué trata el video y su gancho inicial`,
-    `- texto_pantalla: Formato recomendado (ej. Hablando a cámara, POV, Vlog)`,
-    `- indicaciones: Pilar o ángulo sugerido`,
+    `Devuelve el JSON con bloques donde cada bloque sea una idea diferente de video (titulo = titulo corto de la idea, dialogo = resumen breve de la idea de 1 a 2 frases, texto_pantalla = formato recomendado, indicaciones = pilar). Genera exactamente ${count} bloques cortos en el JSON.`,
     brandContext ? `Contexto fijo de la marca: ${brandContext}` : ''
   ]
     .filter(Boolean)
     .join('\n');
 
   const bloques = await generateScriptWithAI({
-    titulo: `Lluvia de ${count} ideas sobre: ${input.tema}`,
+    titulo: `${count} ideas de videos sobre: ${input.tema}`,
     textoBase: prompt,
     pilar: input.pilar,
     formato: input.formato,
-    duracionSegundos: 45
+    duracionSegundos: 30
   });
 
   let created = 0;
   for (const b of bloques) {
     const titulo = (b.titulo || '').trim();
     if (!titulo) continue;
+    const rawFormat = (b.texto_pantalla || '').replace(/^Formato:\s*/i, '').trim();
     await createIdea({
       titulo,
       texto_base: b.dialogo?.trim() || undefined,
       pilar: input.pilar || undefined,
-      formato: input.formato || b.texto_pantalla?.trim() || undefined,
+      formato: input.formato || rawFormat || undefined,
       lote_id: input.loteId ?? null
     });
     created++;
