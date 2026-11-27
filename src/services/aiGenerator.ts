@@ -312,6 +312,23 @@ export async function getTeamVaultStatus(): Promise<TeamVaultStatus> {
   }
 }
 
+async function readEdgeErrorDetail(error: unknown): Promise<string> {
+  const fallback =
+    error && typeof error === 'object' && 'message' in error
+      ? String((error as { message?: unknown }).message || 'Error en Edge Function')
+      : 'Error en Edge Function';
+  try {
+    const ctx = (error as { context?: Response } | null)?.context;
+    if (ctx && typeof ctx.json === 'function') {
+      const errBody = (await ctx.json()) as { error?: string };
+      if (errBody?.error) return errBody.error;
+    }
+  } catch {
+    // ignore parse failure
+  }
+  return fallback;
+}
+
 export async function saveEncryptedTeamKey(
   keyName: 'gemini' | 'tavily' | 'claude',
   apiKey: string
@@ -327,9 +344,8 @@ export async function saveEncryptedTeamKey(
     }
   });
   if (error) {
-    throw new Error(
-      `No se pudo cifrar en Supabase (${error.message}). Despliega la Edge Function ai-proxy primero.`
-    );
+    const detail = await readEdgeErrorDetail(error);
+    throw new Error(`No se pudo cifrar en Supabase (${detail}).`);
   }
   if (data?.error) throw new Error(String(data.error));
   return { hint: String(data?.hint || '••••') };
@@ -347,7 +363,7 @@ export async function clearEncryptedTeamKey(
       keyName
     }
   });
-  if (error) throw new Error(error.message);
+  if (error) throw new Error(await readEdgeErrorDetail(error));
   if (data?.error) throw new Error(String(data.error));
 }
 
@@ -477,9 +493,7 @@ async function callGeminiUnified(input: {
       }
     });
     if (error) {
-      throw new Error(
-        `No hay clave local de Gemini y el proxy del equipo no respondió (${error.message}).`
-      );
+      throw new Error(await readEdgeErrorDetail(error));
     }
     if (data?.error) throw new Error(String(data.error));
     return {
@@ -536,7 +550,7 @@ async function callClaudeDirectUnified(input: {
         userPrompt: input.userPrompt
       }
     });
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(await readEdgeErrorDetail(error));
     if (data?.error) throw new Error(String(data.error));
     return String(data?.text || '');
   }
@@ -587,17 +601,7 @@ async function callClaudeEdge(input: {
   });
 
   if (error) {
-    let detail = error.message;
-    try {
-      const ctx = (error as { context?: Response }).context;
-      if (ctx && typeof ctx.json === 'function') {
-        const errBody = (await ctx.json()) as { error?: string };
-        if (errBody?.error) detail = errBody.error;
-      }
-    } catch {
-      // ignore
-    }
-    throw new Error(detail);
+    throw new Error(await readEdgeErrorDetail(error));
   }
 
   if (data?.error) {

@@ -78,55 +78,81 @@ async function decryptSecret(encoded: string): Promise<string> {
   return new TextDecoder().decode(plainBuf);
 }
 
-async function readVault(spaceKey: string): Promise<VaultBlob> {
+function collectDbKeys(clientKey?: string): string[] {
+  const candidates = [
+    clientKey || '',
+    Deno.env.get('SUPABASE_ANON_KEY') || '',
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+  ]
+    .map((k) => k.trim())
+    .filter(Boolean);
+  return Array.from(new Set(candidates));
+}
+
+async function readVault(spaceKey: string, clientKey?: string): Promise<VaultBlob> {
   const url = getEnvOrThrow('SUPABASE_URL');
-  const serviceKey = getEnvOrThrow('SUPABASE_SERVICE_ROLE_KEY');
-  const res = await fetch(
-    `${url}/rest/v1/guion_sync?space_key=eq.${encodeURIComponent(
-      spaceKey
-    )}&entity_type=eq.ai_config&entity_id=eq.team-vault&select=data`,
-    {
-      headers: {
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`
+  const keys = collectDbKeys(clientKey);
+  for (const key of keys) {
+    const res = await fetch(
+      `${url}/rest/v1/guion_sync?space_key=eq.${encodeURIComponent(
+        spaceKey
+      )}&entity_type=eq.ai_config&entity_id=eq.team-vault&select=data`,
+      {
+        headers: {
+          apikey: key,
+          Authorization: `Bearer ${key}`
+        }
       }
+    );
+    if (res.ok) {
+      const rows = (await res.json()) as Array<{ data?: VaultBlob }>;
+      return rows?.[0]?.data || {};
     }
-  );
-  if (!res.ok) return {};
-  const rows = (await res.json()) as Array<{ data?: VaultBlob }>;
-  return rows?.[0]?.data || {};
-}
-
-async function writeVault(spaceKey: string, vault: VaultBlob): Promise<void> {
-  const url = getEnvOrThrow('SUPABASE_URL');
-  const serviceKey = getEnvOrThrow('SUPABASE_SERVICE_ROLE_KEY');
-  const res = await fetch(
-    `${url}/rest/v1/guion_sync?on_conflict=space_key,entity_type,entity_id`,
-    {
-      method: 'POST',
-      headers: {
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'resolution=merge-duplicates'
-      },
-      body: JSON.stringify({
-        space_key: spaceKey,
-        entity_type: 'ai_config',
-        entity_id: 'team-vault',
-        data: vault,
-        updated_at: Date.now(),
-        deleted: false
-      })
-    }
-  );
-  if (!res.ok) {
-    throw new Error(`No se pudo guardar en bóveda cifrada (${res.status})`);
   }
+  return {};
 }
 
-async function resolveKey(spaceKey: string, name: VaultKeyName): Promise<string> {
-  const vault = await readVault(spaceKey);
+async function writeVault(spaceKey: string, vault: VaultBlob, clientKey?: string): Promise<void> {
+  const url = getEnvOrThrow('SUPABASE_URL');
+  const keys = collectDbKeys(clientKey);
+  let lastStatus = 0;
+  let lastBody = '';
+  for (const key of keys) {
+    const res = await fetch(
+      `${url}/rest/v1/guion_sync?on_conflict=space_key,entity_type,entity_id`,
+      {
+        method: 'POST',
+        headers: {
+          apikey: key,
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify({
+          space_key: spaceKey,
+          entity_type: 'ai_config',
+          entity_id: 'team-vault',
+          data: vault,
+          updated_at: Date.now(),
+          deleted: false
+        })
+      }
+    );
+    if (res.ok) return;
+    lastStatus = res.status;
+    lastBody = await res.text().catch(() => '');
+  }
+  throw new Error(
+    `No se pudo guardar en bóveda cifrada (${lastStatus}${lastBody ? `: ${lastBody.slice(0, 120)}` : ''})`
+  );
+}
+
+async function resolveKey(
+  spaceKey: string,
+  name: VaultKeyName,
+  clientKey?: string
+): Promise<string> {
+  const vault = await readVault(spaceKey, clientKey);
   const enc = vault[name];
   if (enc) {
     try {
@@ -150,12 +176,16 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const reqApiKey =
+      req.headers.get('apikey') ||
+      req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ||
+      '';
     const body = (await req.json()) as Record<string, unknown>;
     const action = String(body.action || '');
     const spaceKey = String(body.spaceKey || 'noxa-principal').trim() || 'noxa-principal';
 
     if (action === 'status') {
-      const vault = await readVault(spaceKey);
+      const vault = await readVault(spaceKey, reqApiKey);
       const envGemini = Boolean(Deno.env.get('GEMINI_API_KEY'));
       const envTavily = Boolean(Deno.env.get('TAVILY_API_KEY'));
       const envClaude = Boolean(Deno.env.get('ANTHROPIC_API_KEY'));
@@ -181,7 +211,7 @@ Deno.serve(async (req) => {
       if (!['gemini', 'tavily', 'claude'].includes(keyName) || !apiKey) {
         return jsonResponse({ error: 'Falta keyName o apiKey válida.' }, 400);
       }
-      const vault = await readVault(spaceKey);
+      const vault = await readVault(spaceKey, reqApiKey);
       const encrypted = await encryptSecret(apiKey);
       const hint = `••${apiKey.slice(-4)}`;
       const updated: VaultBlob = {
@@ -192,7 +222,7 @@ Deno.serve(async (req) => {
           [keyName]: hint
         }
       };
-      await writeVault(spaceKey, updated);
+      await writeVault(spaceKey, updated, reqApiKey);
       return jsonResponse({ ok: true, keyName, hint });
     }
 
@@ -201,15 +231,15 @@ Deno.serve(async (req) => {
       if (!['gemini', 'tavily', 'claude'].includes(keyName)) {
         return jsonResponse({ error: 'keyName inválido.' }, 400);
       }
-      const vault = await readVault(spaceKey);
+      const vault = await readVault(spaceKey, reqApiKey);
       delete vault[keyName];
       if (vault.hints) delete vault.hints[keyName];
-      await writeVault(spaceKey, vault);
+      await writeVault(spaceKey, vault, reqApiKey);
       return jsonResponse({ ok: true, keyName });
     }
 
     if (action === 'call_gemini') {
-      const apiKey = await resolveKey(spaceKey, 'gemini');
+      const apiKey = await resolveKey(spaceKey, 'gemini', reqApiKey);
       if (!apiKey) {
         return jsonResponse(
           { error: 'No hay clave de Gemini cifrada en Supabase todavía.' },
@@ -298,7 +328,7 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'call_tavily') {
-      const apiKey = await resolveKey(spaceKey, 'tavily');
+      const apiKey = await resolveKey(spaceKey, 'tavily', reqApiKey);
       if (!apiKey) {
         return jsonResponse({ error: 'No hay clave de Tavily configurada.' }, 400);
       }
@@ -323,7 +353,7 @@ Deno.serve(async (req) => {
     }
 
     if (action === 'call_claude') {
-      const apiKey = await resolveKey(spaceKey, 'claude');
+      const apiKey = await resolveKey(spaceKey, 'claude', reqApiKey);
       if (!apiKey) {
         return jsonResponse({ error: 'No hay clave de Claude configurada.' }, 400);
       }
