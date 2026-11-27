@@ -24,9 +24,7 @@ Deno.serve(async (req) => {
     const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
     if (!apiKey) {
       return new Response(
-        JSON.stringify({
-          error: 'Falta configurar el secreto ANTHROPIC_API_KEY en Supabase Edge Functions.'
-        }),
+        JSON.stringify({ error: 'Falta configurar ANTHROPIC_API_KEY en Supabase Secrets.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -41,31 +39,15 @@ Deno.serve(async (req) => {
     }
 
     const duracion = body.duracionSegundos || 45;
-    const systemPrompt = `Eres un guionista experto en videos cortos (Reels y TikTok) en español natural y directo.
-Devuelve ÚNICAMENTE un JSON válido (sin markdown ni texto extra) con esta estructura exacta:
-{
-  "bloques": [
-    {
-      "tipo": "gancho" | "historia" | "moraleja" | "cta",
-      "titulo": "Nombre corto de la escena (ej. Gancho, Escena 1, Cierre)",
-      "inicio_s": 0,
-      "fin_s": 4,
-      "dialogo": "Texto exacto para leer en el teleprompter",
-      "texto_pantalla": "Texto corto sugerido en pantalla",
-      "plano": "Ej. Plano medio frontal",
-      "camara": "Ej. Estática o acercamiento",
-      "indicaciones": "Acción física o indicación breve de grabación"
-    }
-  ]
-}
+    const systemPrompt = `Eres un guionista y estratega experto en videos cortos (Reels y TikTok) en español natural y directo.
+Siempre debes responder llamando a la herramienta "guardar_bloques".
 Reglas:
-- Ritmo hablado ~3 palabras por segundo (apunta a ~${duracion} segundos totales).
-- Empieza con un gancho fuerte en los primeros 3-4 segundos.
-- Cierra con un CTA claro.`;
+- Si te piden un guion: ritmo hablado ~3 palabras por segundo (apunta a ~${duracion} segundos totales), gancho fuerte al inicio y CTA claro al final.
+- Si te piden una lluvia de ideas: devuelve exactamente la cantidad de bloques pedida, donde cada bloque es una idea distinta.`;
 
     const userPrompt = [
       `Tema / Título: ${titulo}`,
-      body.textoBase ? `Idea base: ${body.textoBase}` : '',
+      body.textoBase ? `Instrucciones / Contexto: ${body.textoBase}` : '',
       body.pilar ? `Pilar: ${body.pilar}` : '',
       body.formato ? `Formato: ${body.formato}` : '',
       body.objetivo ? `Objetivo: ${body.objetivo}` : '',
@@ -74,6 +56,35 @@ Reglas:
     ]
       .filter(Boolean)
       .join('\n');
+
+    const toolSchema = {
+      name: 'guardar_bloques',
+      description: 'Devuelve la lista estructurada de escenas o ideas generadas.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          bloques: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                tipo: { type: 'string', enum: ['gancho', 'historia', 'moraleja', 'cta'] },
+                titulo: { type: 'string' },
+                inicio_s: { type: 'number' },
+                fin_s: { type: 'number' },
+                dialogo: { type: 'string' },
+                texto_pantalla: { type: 'string' },
+                plano: { type: 'string' },
+                camara: { type: 'string' },
+                indicaciones: { type: 'string' }
+              },
+              required: ['tipo', 'titulo', 'dialogo']
+            }
+          }
+        },
+        required: ['bloques']
+      }
+    };
 
     const callAnthropic = (modelId: string) =>
       fetch('https://api.anthropic.com/v1/messages', {
@@ -87,13 +98,14 @@ Reglas:
           model: modelId,
           max_tokens: 4096,
           system: systemPrompt,
+          tools: [toolSchema],
+          tool_choice: { type: 'tool', name: 'guardar_bloques' },
           messages: [{ role: 'user', content: userPrompt }]
         })
       });
 
     let anthropicRes = await callAnthropic('claude-sonnet-5-5');
 
-    // Auto-fallback to first active model from /v1/models if model ID changes
     if (anthropicRes.status === 404) {
       const modelsRes = await fetch('https://api.anthropic.com/v1/models', {
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
@@ -120,48 +132,34 @@ Reglas:
     }
 
     const data = await anthropicRes.json();
-    const rawText: string = (data?.content?.[0]?.text || '')
-      .replace(/```json\s*/gi, '')
-      .replace(/```\s*/g, '')
-      .trim();
+    const contentBlocks = (data?.content || []) as Array<{
+      type: string;
+      input?: { bloques?: unknown[] };
+      text?: string;
+    }>;
 
-    let parsed: { bloques?: unknown[] } | null = null;
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+    const toolUse = contentBlocks.find((c) => c.type === 'tool_use');
+    if (toolUse?.input?.bloques && Array.isArray(toolUse.input.bloques)) {
+      return new Response(JSON.stringify({ bloques: toolUse.input.bloques }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    const textBlock = contentBlocks.find((c) => c.type === 'text')?.text || '';
+    const jsonMatch = textBlock.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      try {
-        parsed = JSON.parse(jsonMatch[0]) as { bloques?: unknown[] };
-      } catch {
-        parsed = null;
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed?.bloques)) {
+        return new Response(JSON.stringify({ bloques: parsed.bloques }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
       }
     }
 
-    // Fallback: extract complete objects inside "bloques" if output was truncated
-    if (!parsed || !Array.isArray(parsed.bloques)) {
-      const objMatches = rawText.match(/\{[^{}]*"titulo"\s*:[^{}]*\}/g) || [];
-      const recovered = objMatches
-        .map((chunk) => {
-          try {
-            return JSON.parse(chunk);
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean);
-      if (recovered.length > 0) {
-        parsed = { bloques: recovered };
-      }
-    }
-
-    if (!parsed || !Array.isArray(parsed.bloques) || parsed.bloques.length === 0) {
-      return new Response(
-        JSON.stringify({ error: 'La IA no devolvió un JSON válido.' }),
-        { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    return new Response(JSON.stringify(parsed), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    return new Response(
+      JSON.stringify({ error: 'La IA no devolvió bloques estructurados.' }),
+      { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
   } catch (err) {
     return new Response(
       JSON.stringify({ error: err instanceof Error ? err.message : 'Error interno' }),
