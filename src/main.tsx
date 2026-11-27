@@ -4,7 +4,22 @@ import { registerSW } from 'virtual:pwa-register';
 import { App } from './App';
 import './styles/index.css';
 
-registerSW({ immediate: true });
+const updateSW = registerSW({
+  immediate: true,
+  onNeedRefresh() {
+    void updateSW(true);
+  }
+});
+
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!refreshing) {
+      refreshing = true;
+      window.location.reload();
+    }
+  });
+}
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
