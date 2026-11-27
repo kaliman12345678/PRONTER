@@ -14,7 +14,7 @@ import {
 
 function makeConfig(overrides: Partial<AIConfig> = {}): AIConfig {
   return {
-    provider: 'claude-edge',
+    provider: 'gemini',
     geminiApiKey: '',
     geminiModel: 'gemini-4-hydrogen',
     claudeApiKey: '',
@@ -34,27 +34,29 @@ describe('aiGenerator dual-provider & team sync service', () => {
     vi.restoreAllMocks();
   });
 
-  it('defaults to claude-edge and supports switching to gemini with gemini-4-hydrogen default', () => {
-    expect(getAIConfig().provider).toBe('claude-edge');
+  it('defaults to gemini with gemini-4-hydrogen and migrates legacy claude-edge', () => {
+    expect(getAIConfig().provider).toBe('gemini');
     expect(getAIConfig().geminiModel).toBe('gemini-4-hydrogen');
-    expect(getActiveProviderLabel()).toBe('Claude (Servidor)');
+    expect(getActiveProviderLabel()).toBe('Gemini 4 Hydrogen');
+
+    localStorage.setItem('pronter-ai-config-v1', JSON.stringify({ provider: 'claude-edge' }));
+    expect(getAIConfig().provider).toBe('gemini');
 
     saveAIConfig(
       makeConfig({
-        provider: 'gemini',
-        geminiApiKey: 'AQ.test-key',
-        geminiModel: 'gemini-3.1-pro-preview'
+        provider: 'claude-direct',
+        claudeModel: 'claude-sonnet-4-6'
       })
     );
 
-    expect(getAIConfig().provider).toBe('gemini');
-    expect(getActiveProviderLabel()).toBe('Gemini 3.1 Pro');
+    expect(getAIConfig().provider).toBe('claude-direct');
+    expect(getActiveProviderLabel()).toBe('Claude Sonnet');
   });
 
   it('applies remote synced AI config without overwriting local secret keys', () => {
     saveAIConfig(
       makeConfig({
-        provider: 'claude-edge',
+        provider: 'claude-direct',
         geminiApiKey: 'AQ.local-device-key'
       })
     );

@@ -7,7 +7,7 @@ import {
 } from '../db/cloudSync';
 import type { BloqueStoryboard, GanchoTipo } from '../types/reellab';
 
-export type AIProvider = 'gemini' | 'claude-edge' | 'claude-direct';
+export type AIProvider = 'gemini' | 'claude-direct';
 export type TrendsSource = 'auto' | 'trends-rss' | 'tavily' | 'gemini-search' | 'off';
 
 export interface AIConfig {
@@ -147,9 +147,13 @@ export function setBrandContext(text: string): void {
   }
 }
 
+function normalizeProvider(provider?: string): AIProvider {
+  return provider === 'claude-direct' ? 'claude-direct' : 'gemini';
+}
+
 export function getAIConfig(): AIConfig {
   const defaults: AIConfig = {
-    provider: 'claude-edge',
+    provider: 'gemini',
     geminiApiKey: '',
     geminiModel: 'gemini-4-hydrogen',
     claudeApiKey: '',
@@ -166,7 +170,7 @@ export function getAIConfig(): AIConfig {
   try {
     const raw = localStorage.getItem(AI_CONFIG_KEY);
     if (!raw) return defaults;
-    const parsed = JSON.parse(raw) as Partial<AIConfig>;
+    const parsed = JSON.parse(raw) as Partial<AIConfig> & { provider?: string };
     const migratedModel =
       parsed.geminiModel === 'gemini-2.5-flash' || parsed.geminiModel === 'gemini-2.5-pro'
         ? defaults.geminiModel
@@ -176,6 +180,7 @@ export function getAIConfig(): AIConfig {
     return {
       ...defaults,
       ...parsed,
+      provider: normalizeProvider(parsed.provider),
       geminiModel: migratedModel || defaults.geminiModel,
       trendsSource: migratedTrendsSource,
       trendsGeo: parsed.trendsGeo || defaults.trendsGeo,
@@ -215,7 +220,7 @@ export function applyRemoteSyncedAIConfig(remote: SyncedAIConfigData): boolean {
   const current = getAIConfig();
   const next: AIConfig = {
     ...current,
-    provider: remote.provider || current.provider,
+    provider: normalizeProvider(remote.provider || current.provider),
     geminiModel: remote.geminiModel || current.geminiModel,
     claudeModel: remote.claudeModel || current.claudeModel,
     trendsSource: remote.trendsSource || current.trendsSource,
@@ -266,15 +271,12 @@ export async function saveAndSyncAIConfig(
 }
 
 export function getActiveProviderLabel(cfg = getAIConfig()): string {
-  if (cfg.provider === 'gemini') {
-    const match = GEMINI_MODELS.find((m) => m.id === cfg.geminiModel);
-    if (match) return match.label.split(' (')[0];
-    return cfg.geminiModel || 'Gemini';
-  }
   if (cfg.provider === 'claude-direct') {
-    return cfg.claudeModel.includes('haiku') ? 'Claude Haiku (Directo)' : 'Claude Sonnet (Directo)';
+    return cfg.claudeModel.includes('haiku') ? 'Claude Haiku' : 'Claude Sonnet';
   }
-  return 'Claude (Servidor)';
+  const match = GEMINI_MODELS.find((m) => m.id === cfg.geminiModel);
+  if (match) return match.label.split(' (')[0];
+  return cfg.geminiModel || 'Gemini';
 }
 
 function formatUsedModelLabel(cfg: AIConfig, modelUsed: string): string {
@@ -583,38 +585,6 @@ async function callClaudeDirectUnified(input: {
   return payload?.content?.[0]?.text || '';
 }
 
-async function callClaudeEdge(input: {
-  titulo: string;
-  textoBase?: string;
-  pilar?: string;
-  formato?: string;
-  objetivo?: string;
-  ganchoTipo?: string;
-  duracionSegundos?: number;
-  tono?: string;
-}): Promise<GeneratedScriptBlock[]> {
-  const client = getSupabaseClient();
-  if (!client) throw new Error('Sin conexión a Supabase');
-
-  const { data, error } = await client.functions.invoke('generar-guion', {
-    body: input
-  });
-
-  if (error) {
-    throw new Error(await readEdgeErrorDetail(error));
-  }
-
-  if (data?.error) {
-    throw new Error(String(data.error));
-  }
-
-  const bloques = (data?.bloques || []) as GeneratedScriptBlock[];
-  if (!Array.isArray(bloques) || bloques.length === 0) {
-    throw new Error('La IA no devolvió escenas.');
-  }
-  return bloques;
-}
-
 // ---------- Multi-source Live Trends Fetchers ----------
 
 async function fetchGoogleTrendsRss(
@@ -816,16 +786,6 @@ export async function testTrendsConnection(cfg = getAIConfig()): Promise<string>
 }
 
 export async function testAIConnection(cfg = getAIConfig()): Promise<string> {
-  if (cfg.provider === 'gemini') {
-    const res = await callGeminiUnified({
-      cfg,
-      userPrompt: 'Responde únicamente: OK',
-      jsonMode: false,
-      useSearch: false
-    });
-    return `Conexión exitosa con ${formatUsedModelLabel(cfg, res.modelUsed)}: ${res.text.slice(0, 40)}`;
-  }
-
   if (cfg.provider === 'claude-direct') {
     const text = await callClaudeDirectUnified({
       cfg,
@@ -835,12 +795,13 @@ export async function testAIConnection(cfg = getAIConfig()): Promise<string> {
     return `Conexión exitosa con ${getActiveProviderLabel(cfg)}: ${text.slice(0, 40)}`;
   }
 
-  const blocks = await callClaudeEdge({
-    titulo: 'Prueba rápida de conexión',
-    textoBase: 'Devuelve exactamente 1 bloque corto de prueba.',
-    duracionSegundos: 15
+  const res = await callGeminiUnified({
+    cfg,
+    userPrompt: 'Responde únicamente: OK',
+    jsonMode: false,
+    useSearch: false
   });
-  return `Conexión exitosa con Claude (Servidor): ${blocks.length} bloque recibido.`;
+  return `Conexión exitosa con ${formatUsedModelLabel(cfg, res.modelUsed)}: ${res.text.slice(0, 40)}`;
 }
 
 function buildSystemHeader(cfg: AIConfig, brandContext: string): string {
@@ -949,58 +910,32 @@ Reglas:
     };
   }
 
-  const enrichedBase = [
-    buildSystemHeader(cfg, brandContext),
-    input.textoBase || '',
-    formatHookCatalogSummary(input.hookTypes),
-    trends.summary ? `Tendencias, temas y memes actuales encontrados:\n${trends.summary}` : ''
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-
-  if (cfg.provider === 'claude-direct') {
-    const systemPrompt = `${buildSystemHeader(cfg, brandContext)}
+  const systemPrompt = `${buildSystemHeader(cfg, brandContext)}
 Responde ÚNICAMENTE con un objeto JSON válido (sin markdown):
 {"bloques":[{"tipo":"gancho"|"historia"|"moraleja"|"cta","titulo":"...","inicio_s":0,"fin_s":4,"dialogo":"...","texto_pantalla":"...","plano":"...","camara":"...","indicaciones":"...","edicion":["..."],"sketch_prompt":"..."}]}
 Apunta a ~${duracion}s (~3 palabras/segundo).`;
 
-    const userPrompt = [
-      `Tema / Título: ${input.titulo}`,
-      input.textoBase ? `Instrucciones: ${input.textoBase}` : '',
-      input.pilar ? `Pilar: ${input.pilar}` : '',
-      input.formato ? `Formato: ${input.formato}` : '',
-      input.objetivo ? `Objetivo: ${input.objetivo}` : '',
-      input.ganchoTipo ? `Gancho: ${input.ganchoTipo}` : '',
-      input.tono ? `Tono: ${input.tono}` : '',
-      formatHookCatalogSummary(input.hookTypes),
-      trends.summary ? `Tendencias actuales:\n${trends.summary}` : ''
-    ]
-      .filter(Boolean)
-      .join('\n');
+  const userPrompt = [
+    `Tema / Título: ${input.titulo}`,
+    input.textoBase ? `Instrucciones: ${input.textoBase}` : '',
+    input.pilar ? `Pilar: ${input.pilar}` : '',
+    input.formato ? `Formato: ${input.formato}` : '',
+    input.objetivo ? `Objetivo: ${input.objetivo}` : '',
+    input.ganchoTipo ? `Gancho: ${input.ganchoTipo}` : '',
+    input.tono ? `Tono: ${input.tono}` : '',
+    formatHookCatalogSummary(input.hookTypes),
+    trends.summary ? `Tendencias actuales:\n${trends.summary}` : ''
+  ]
+    .filter(Boolean)
+    .join('\n');
 
-    const raw = await callClaudeDirectUnified({ cfg, systemPrompt, userPrompt });
-    const parsed = parseJsonLenient<{ bloques?: GeneratedScriptBlock[] }>(raw);
-    if (!parsed?.bloques?.length) {
-      throw new Error('Claude no devolvió escenas válidas.');
-    }
-    return {
-      bloques: parsed.bloques,
-      meta: {
-        providerLabel: getActiveProviderLabel(cfg),
-        trendSummary: trends.summary || undefined,
-        trendSourceLabel: trends.sourceLabel,
-        sources: trends.sources
-      }
-    };
+  const raw = await callClaudeDirectUnified({ cfg, systemPrompt, userPrompt });
+  const parsed = parseJsonLenient<{ bloques?: GeneratedScriptBlock[] }>(raw);
+  if (!parsed?.bloques?.length) {
+    throw new Error('Claude no devolvió escenas válidas.');
   }
-
-  const bloques = await callClaudeEdge({
-    ...input,
-    textoBase: enrichedBase || undefined
-  });
-
   return {
-    bloques,
+    bloques: parsed.bloques,
     meta: {
       providerLabel: getActiveProviderLabel(cfg),
       trendSummary: trends.summary || undefined,

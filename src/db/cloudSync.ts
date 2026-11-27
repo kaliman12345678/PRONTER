@@ -11,7 +11,7 @@ const SPACE_KEY_STORAGE = 'guion-en-pantalla-space-key-v1';
 export type EntityType = 'project' | 'piece' | 'document' | 'ai_config';
 
 export interface SyncedAIConfigData {
-  provider: 'gemini' | 'claude-edge' | 'claude-direct';
+  provider: 'gemini' | 'claude-direct';
   geminiModel: string;
   claudeModel: string;
   trendsSource: 'auto' | 'trends-rss' | 'tavily' | 'gemini-search' | 'off';

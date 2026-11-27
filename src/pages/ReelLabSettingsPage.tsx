@@ -245,11 +245,7 @@ export function ReelLabSettingsPage({
             <strong>Motor IA del Equipo (Sincronizado)</strong>
           </div>
           <span className="badge estructura">
-            {aiCfg.provider === 'gemini'
-              ? 'Gemini'
-              : aiCfg.provider === 'claude-direct'
-              ? 'Claude Directo'
-              : 'Claude Servidor'}
+            {aiCfg.provider === 'claude-direct' ? 'Claude' : 'Gemini'}
           </span>
         </div>
 
@@ -274,9 +270,8 @@ export function ReelLabSettingsPage({
               setAiCfg((prev) => ({ ...prev, provider: e.target.value as AIProvider }))
             }
           >
-            <option value="gemini">Google Gemini (Free Tier o Créditos Pro)</option>
-            <option value="claude-edge">Claude — Servidor actual del equipo (Supabase)</option>
-            <option value="claude-direct">Claude — Clave propia / bóveda cifrada</option>
+            <option value="gemini">Google Gemini (Por defecto · Free Tier o Créditos Pro)</option>
+            <option value="claude-direct">Claude (API Key propia / bóveda cifrada)</option>
           </select>
         </div>
 
@@ -372,13 +367,6 @@ export function ReelLabSettingsPage({
                 ))}
               </select>
             </div>
-          </div>
-        )}
-
-        {aiCfg.provider === 'claude-edge' && (
-          <div className="alert" style={{ fontSize: '0.84rem' }}>
-            Usa la función actual desplegada en Supabase (<code>generar-guion</code>) con la
-            clave de Anthropic guardada en Supabase Secrets.
           </div>
         )}
 
