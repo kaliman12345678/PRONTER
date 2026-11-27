@@ -40,7 +40,23 @@ Deno.serve(async (req) => {
 
     const duracion = body.duracionSegundos || 45;
     const systemPrompt = `Eres un guionista y estratega experto en videos cortos (Reels y TikTok) en español natural y directo.
-Siempre debes responder llamando a la herramienta "guardar_bloques".
+Responde ÚNICAMENTE con un objeto JSON válido (sin texto antes ni después, sin bloques markdown).
+Estructura exacta:
+{
+  "bloques": [
+    {
+      "tipo": "gancho" | "historia" | "moraleja" | "cta",
+      "titulo": "Nombre corto",
+      "inicio_s": 0,
+      "fin_s": 4,
+      "dialogo": "Texto exacto",
+      "texto_pantalla": "Texto en pantalla",
+      "plano": "Plano sugerido",
+      "camara": "Movimiento",
+      "indicaciones": "Indicación breve"
+    }
+  ]
+}
 Reglas:
 - Si te piden un guion: ritmo hablado ~3 palabras por segundo (apunta a ~${duracion} segundos totales), gancho fuerte al inicio y CTA claro al final.
 - Si te piden una lluvia de ideas: devuelve exactamente la cantidad de bloques pedida, donde cada bloque es una idea distinta.`;
@@ -57,35 +73,6 @@ Reglas:
       .filter(Boolean)
       .join('\n');
 
-    const toolSchema = {
-      name: 'guardar_bloques',
-      description: 'Devuelve la lista estructurada de escenas o ideas generadas.',
-      input_schema: {
-        type: 'object',
-        properties: {
-          bloques: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                tipo: { type: 'string', enum: ['gancho', 'historia', 'moraleja', 'cta'] },
-                titulo: { type: 'string' },
-                inicio_s: { type: 'number' },
-                fin_s: { type: 'number' },
-                dialogo: { type: 'string' },
-                texto_pantalla: { type: 'string' },
-                plano: { type: 'string' },
-                camara: { type: 'string' },
-                indicaciones: { type: 'string' }
-              },
-              required: ['tipo', 'titulo', 'dialogo']
-            }
-          }
-        },
-        required: ['bloques']
-      }
-    };
-
     const callAnthropic = (modelId: string) =>
       fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -98,13 +85,11 @@ Reglas:
           model: modelId,
           max_tokens: 4096,
           system: systemPrompt,
-          tools: [toolSchema],
-          tool_choice: { type: 'tool', name: 'guardar_bloques' },
           messages: [{ role: 'user', content: userPrompt }]
         })
       });
 
-    let anthropicRes = await callAnthropic('claude-sonnet-5-5');
+    let anthropicRes = await callAnthropic('claude-sonnet-4-6');
 
     if (anthropicRes.status === 404) {
       const modelsRes = await fetch('https://api.anthropic.com/v1/models', {
@@ -132,34 +117,48 @@ Reglas:
     }
 
     const data = await anthropicRes.json();
-    const contentBlocks = (data?.content || []) as Array<{
-      type: string;
-      input?: { bloques?: unknown[] };
-      text?: string;
-    }>;
+    const rawText: string = (data?.content?.[0]?.text || '')
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .trim();
 
-    const toolUse = contentBlocks.find((c) => c.type === 'tool_use');
-    if (toolUse?.input?.bloques && Array.isArray(toolUse.input.bloques)) {
-      return new Response(JSON.stringify({ bloques: toolUse.input.bloques }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-
-    const textBlock = contentBlocks.find((c) => c.type === 'text')?.text || '';
-    const jsonMatch = textBlock.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(parsed?.bloques)) {
-        return new Response(JSON.stringify({ bloques: parsed.bloques }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+    let parsed: { bloques?: unknown[] } | null = null;
+    const firstBrace = rawText.indexOf('{');
+    const lastBrace = rawText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        parsed = JSON.parse(rawText.slice(firstBrace, lastBrace + 1)) as { bloques?: unknown[] };
+      } catch {
+        parsed = null;
       }
     }
 
-    return new Response(
-      JSON.stringify({ error: 'La IA no devolvió bloques estructurados.' }),
-      { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    if (!parsed || !Array.isArray(parsed.bloques)) {
+      const objMatches = rawText.match(/\{[^{}]*"dialogo"\s*:[^{}]*\}/g) || [];
+      const recovered = objMatches
+        .map((chunk) => {
+          try {
+            return JSON.parse(chunk);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+      if (recovered.length > 0) {
+        parsed = { bloques: recovered };
+      }
+    }
+
+    if (!parsed || !Array.isArray(parsed.bloques) || parsed.bloques.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'La IA no devolvió bloques válidos.' }),
+        { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    return new Response(JSON.stringify({ bloques: parsed.bloques }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
   } catch (err) {
     return new Response(
       JSON.stringify({ error: err instanceof Error ? err.message : 'Error interno' }),
