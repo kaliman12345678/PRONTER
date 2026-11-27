@@ -1,18 +1,32 @@
 import { useState } from 'react';
-import { ChevronRight, FilePlus2, FileText, FileUp, Trash2 } from 'lucide-react';
+import { ChevronRight, FilePlus2, FileText, FileUp, Sparkles, Trash2 } from 'lucide-react';
 import { ReferenceVideoSection } from '../components/ReferenceVideoSection';
-import { DOCUMENT_TYPES, type ContentPiece, type DocumentType, type ScriptDocument } from '../types/models';
+import { createId } from '../db/database';
+import { generateScriptWithAI } from '../db/reellabService';
+import {
+  DOCUMENT_TYPES,
+  type ContentPiece,
+  type DocumentType,
+  type ScriptBlock,
+  type ScriptDocument
+} from '../types/models';
 
 interface Props {
   piece: ContentPiece;
   documents: ScriptDocument[];
   onCreateDocument: (title: string, type: DocumentType, rawText: string) => Promise<void>;
+  onCreateDocumentWithBlocks: (
+    title: string,
+    type: DocumentType,
+    blocks: ScriptBlock[]
+  ) => Promise<void>;
   onOpenDocument: (docId: string) => void;
   onDeleteDocument: (docId: string) => Promise<void>;
   onImportForPiece: () => void;
   onSaveReferenceUrl: (url: string) => Promise<void>;
   onUploadVideoFile: (file: File) => Promise<void>;
   onRemoveVideoFile: () => Promise<void>;
+  onNotify: (msg: string) => void;
 }
 
 function getBadgeClass(type: DocumentType): string {
@@ -34,17 +48,54 @@ export function PieceDetailPage({
   piece,
   documents,
   onCreateDocument,
+  onCreateDocumentWithBlocks,
   onOpenDocument,
   onDeleteDocument,
   onImportForPiece,
   onSaveReferenceUrl,
   onUploadVideoFile,
-  onRemoveVideoFile
+  onRemoveVideoFile,
+  onNotify
 }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState('');
   const [type, setType] = useState<DocumentType>('Guion');
   const [rawText, setRawText] = useState('');
+
+  const [showAIForm, setShowAIForm] = useState(false);
+  const [aiTopic, setAiTopic] = useState(piece.title);
+  const [aiTone, setAiTone] = useState('Cercano, directo y natural');
+  const [aiSeconds, setAiSeconds] = useState(45);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  const handleGenerateAI = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!aiTopic.trim()) return;
+    setAiLoading(true);
+    try {
+      const generated = await generateScriptWithAI({
+        titulo: piece.title,
+        textoBase: aiTopic.trim(),
+        tono: aiTone.trim() || undefined,
+        duracionSegundos: aiSeconds
+      });
+      const blocks: ScriptBlock[] = generated.map((g) => ({
+        id: createId('blk'),
+        title: g.titulo || g.tipo,
+        text: g.dialogo,
+        cues: [g.plano, g.indicaciones, g.texto_pantalla ? `Pantalla: ${g.texto_pantalla}` : '']
+          .filter(Boolean)
+          .join(' · ') || undefined
+      }));
+      await onCreateDocumentWithBlocks('Guion generado con IA', 'Guion', blocks);
+      setShowAIForm(false);
+      onNotify('Guion generado con Claude IA');
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'No se pudo generar el guion');
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,9 +109,20 @@ export function PieceDetailPage({
 
   return (
     <div className="page-content">
-      <div className="row-between">
+      <div className="row-between" style={{ flexWrap: 'wrap', gap: 8 }}>
         <h2 className="section-title">Documentos escritos</h2>
-        <div className="row">
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => {
+              setShowAIForm((v) => !v);
+              setShowForm(false);
+            }}
+          >
+            <Sparkles size={15} color="#a78bfa" />
+            Con IA
+          </button>
           <button type="button" className="btn btn-secondary btn-sm" onClick={onImportForPiece}>
             <FileUp size={16} />
             Importar
@@ -68,13 +130,73 @@ export function PieceDetailPage({
           <button
             type="button"
             className="btn btn-primary btn-sm"
-            onClick={() => setShowForm((v) => !v)}
+            onClick={() => {
+              setShowForm((v) => !v);
+              setShowAIForm(false);
+            }}
           >
             <FilePlus2 size={16} />
             Nuevo
           </button>
         </div>
       </div>
+
+      {showAIForm && (
+        <form onSubmit={handleGenerateAI} className="card">
+          <div className="row">
+            <Sparkles size={18} color="#a78bfa" />
+            <strong>Generar guion automático con Claude (Anthropic)</strong>
+          </div>
+          <div className="field">
+            <label htmlFor="ai-topic">¿De qué trata el video o qué quieres decir?</label>
+            <textarea
+              id="ai-topic"
+              className="textarea"
+              rows={3}
+              value={aiTopic}
+              onChange={(e) => setAiTopic(e.target.value)}
+              required
+            />
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label htmlFor="ai-tone">Tono</label>
+              <input
+                id="ai-tone"
+                className="input"
+                value={aiTone}
+                onChange={(e) => setAiTone(e.target.value)}
+              />
+            </div>
+            <div className="field" style={{ width: 110 }}>
+              <label htmlFor="ai-dur">Duración (s)</label>
+              <select
+                id="ai-dur"
+                className="select"
+                value={aiSeconds}
+                onChange={(e) => setAiSeconds(Number(e.target.value))}
+              >
+                <option value={30}>30 s</option>
+                <option value={45}>45 s</option>
+                <option value={60}>60 s</option>
+              </select>
+            </div>
+          </div>
+          <div className="row">
+            <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={aiLoading}>
+              <Sparkles size={16} />
+              {aiLoading ? 'Generando guion...' : 'Generar guion'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowAIForm(false)}
+            >
+              Cancelar
+            </button>
+          </div>
+        </form>
+      )}
 
       {showForm && (
         <form onSubmit={handleSubmit} className="card">

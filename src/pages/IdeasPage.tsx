@@ -9,6 +9,7 @@ import {
   Flame,
   Plus,
   RotateCcw,
+  Sparkles,
   Star,
   Trash2,
   X
@@ -16,6 +17,7 @@ import {
 import * as XLSX from 'xlsx';
 import {
   clearIdeaVoto,
+  createAIGuionFromIdea,
   createGuionFromIdea,
   createIdea,
   createLote,
@@ -27,6 +29,7 @@ import {
   fetchLotes,
   fetchPesosViralidad,
   fetchVotantes,
+  generateScriptWithAI,
   rescueIdeaToLote,
   saveIdeaVoto,
   updateIdea
@@ -126,6 +129,7 @@ export function IdeasPage({
   const [newPilar, setNewPilar] = useState('');
   const [newFormato, setNewFormato] = useState('');
   const [newUrl, setNewUrl] = useState('');
+  const [aiLoadingId, setAiLoadingId] = useState<number | null>(null);
 
   // Excel preview modal
   const [excelRows, setExcelRows] = useState<ExcelPreviewRow[] | null>(null);
@@ -472,6 +476,27 @@ export function IdeasPage({
       onNotify(`Idea rescatada en ${mostRecentLote.nombre}`);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'No se pudo rescatar');
+    }
+  };
+
+  const handleGenerateWithAI = async (idea: IdeaConPuntaje) => {
+    setAiLoadingId(idea.id);
+    try {
+      const bloquesIA = await generateScriptWithAI({
+        titulo: idea.titulo,
+        textoBase: idea.texto_base || undefined,
+        pilar: idea.pilar || undefined,
+        formato: idea.formato || undefined,
+        duracionSegundos: idea.duracion_aprox_s || 45
+      });
+      const guion = await createAIGuionFromIdea(idea, bloquesIA);
+      await loadAll();
+      onNotify('Guion generado con Claude IA');
+      onOpenStoryboard(guion);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'Error generando guion con IA');
+    } finally {
+      setAiLoadingId(null);
     }
   };
 
@@ -868,14 +893,25 @@ export function IdeasPage({
                     ))}
                   </div>
 
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    onClick={() => void handleOpenOrCreateGuion(idea)}
-                  >
-                    <Clapperboard size={15} />
-                    {idea.guion_id ? 'Abrir Guion / Storyboard' : 'Crear Guion'}
-                  </button>
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      disabled={aiLoadingId === idea.id}
+                      onClick={() => void handleGenerateWithAI(idea)}
+                    >
+                      <Sparkles size={14} color="#a78bfa" />
+                      {aiLoadingId === idea.id ? 'Generando...' : 'Generar con IA'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => void handleOpenOrCreateGuion(idea)}
+                    >
+                      <Clapperboard size={15} />
+                      {idea.guion_id ? 'Abrir Guion' : 'Crear Guion'}
+                    </button>
+                  </div>
                 </div>
 
                 {isExpanded && (

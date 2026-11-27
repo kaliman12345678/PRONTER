@@ -669,6 +669,20 @@ export function App() {
             onCreateDocument={(title, type, raw) =>
               handleCreateDocument(activePiece.id, title, type, raw)
             }
+            onCreateDocumentWithBlocks={async (title, type, blocks) => {
+              const now = Date.now();
+              const doc = await saveDocument({
+                id: createId('doc'),
+                pieceId: activePiece.id,
+                title,
+                type,
+                blocks,
+                createdAt: now,
+                updatedAt: now
+              });
+              await refreshAll();
+              setView({ name: 'document', docId: doc.id });
+            }}
             onOpenDocument={(docId) => setView({ name: 'document', docId })}
             onDeleteDocument={handleDeleteDocument}
             onImportForPiece={() =>
@@ -681,6 +695,7 @@ export function App() {
             onSaveReferenceUrl={(url) => handleSaveReferenceUrl(activePiece, url)}
             onUploadVideoFile={(file) => handleUploadVideoFile(activePiece, file)}
             onRemoveVideoFile={() => handleRemoveVideoFile(activePiece)}
+            onNotify={showToast}
           />
         )}
 

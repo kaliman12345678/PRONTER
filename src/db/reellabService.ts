@@ -841,6 +841,103 @@ export function estimateWordStats(bloques: BloqueStoryboard[]): {
   return { words, seconds: Math.round(words / 3) };
 }
 
+export interface GeneratedScriptBlock {
+  tipo: BloqueStoryboard['tipo'];
+  titulo: string;
+  inicio_s: number;
+  fin_s: number;
+  dialogo: string;
+  texto_pantalla?: string;
+  plano?: string;
+  camara?: string;
+  indicaciones?: string;
+}
+
+export async function generateScriptWithAI(input: {
+  titulo: string;
+  textoBase?: string;
+  pilar?: string;
+  formato?: string;
+  objetivo?: string;
+  ganchoTipo?: string;
+  duracionSegundos?: number;
+  tono?: string;
+}): Promise<GeneratedScriptBlock[]> {
+  const client = getSupabaseClient();
+  if (!client) throw new Error('Sin conexión a Supabase');
+
+  const { data, error } = await client.functions.invoke('generar-guion', {
+    body: input
+  });
+
+  if (error) {
+    throw new Error(
+      `No se pudo conectar con la función de IA en Supabase (${error.message}). Asegúrate de haber desplegado "generar-guion" y guardado ANTHROPIC_API_KEY.`
+    );
+  }
+
+  if (data?.error) {
+    throw new Error(String(data.error));
+  }
+
+  const bloques = (data?.bloques || []) as GeneratedScriptBlock[];
+  if (!Array.isArray(bloques) || bloques.length === 0) {
+    throw new Error('La IA no devolvió escenas.');
+  }
+  return bloques;
+}
+
+export async function createAIGuionFromIdea(
+  idea: IdeaConPuntaje,
+  bloquesIA: GeneratedScriptBlock[]
+): Promise<GuionResumen> {
+  const client = getSupabaseClient();
+  if (!client) throw new Error('Sin conexión a Supabase');
+
+  let guionId = idea.guion_id;
+  if (!guionId) {
+    const { data: created, error } = await client
+      .from('guion')
+      .insert({
+        idea_id: idea.id,
+        parte: 1,
+        titulo: idea.titulo,
+        estado: 'guion_listo'
+      })
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    guionId = created.id as number;
+  } else {
+    await client.from('bloque').delete().eq('guion_id', guionId);
+  }
+
+  const rows = bloquesIA.map((b, idx) => ({
+    guion_id: guionId,
+    orden: idx + 1,
+    tipo: b.tipo || 'historia',
+    inicio_s: b.inicio_s ?? null,
+    fin_s: b.fin_s ?? null,
+    dialogo: b.dialogo || '',
+    texto_pantalla: b.texto_pantalla || '',
+    plano: b.plano || 'Medio corto (frontal)',
+    camara: b.camara || 'Estática',
+    sketch_texto: b.indicaciones || null
+  }));
+
+  const { error: blkErr } = await client.from('bloque').insert(rows);
+  if (blkErr) throw new Error(blkErr.message);
+
+  await updateIdea(idea.id, { estado: 'en_guion' });
+
+  const { data: full } = await client
+    .from('guion_resumen')
+    .select('*')
+    .eq('id', guionId)
+    .single();
+  return full as GuionResumen;
+}
+
 export async function saveIdeaAsPronterPiece(
   projectId: string,
   guion: GuionResumen,
