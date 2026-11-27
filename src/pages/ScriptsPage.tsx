@@ -10,6 +10,7 @@ import {
   Play,
   Plus,
   Save,
+  Sparkles,
   Trash2,
   X
 } from 'lucide-react';
@@ -20,6 +21,7 @@ import {
   estimateWordStats,
   fetchBloquesByGuion,
   fetchCatalogos,
+  fetchGanchoTipos,
   fetchGuiones,
   fetchIdeas,
   fetchPiezasGanchoCta,
@@ -29,11 +31,19 @@ import {
   updateGuionMeta,
   uploadSketchImage
 } from '../db/reellabService';
+import {
+  completeStoryboardWithAI,
+  generateScriptExpertWithAI,
+  getActiveProviderLabel,
+  getAIConfig,
+  type AIGenerationMeta
+} from '../services/aiGenerator';
 import type { ScriptBlock } from '../types/models';
 import type {
   BloqueStoryboard,
   BloqueTipo,
   CatalogoItem,
+  GanchoTipo,
   GuionEstado,
   GuionResumen,
   IdeaConPuntaje,
@@ -132,6 +142,7 @@ export function ScriptsPage({
   const [ideas, setIdeas] = useState<IdeaConPuntaje[]>([]);
   const [catalogos, setCatalogos] = useState<CatalogoItem[]>([]);
   const [piezas, setPiezas] = useState<PiezaResumen[]>([]);
+  const [ganchoTipos, setGanchoTipos] = useState<GanchoTipo[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [collapsedMonths, setCollapsedMonths] = useState<Set<string>>(() => {
@@ -170,19 +181,26 @@ export function ScriptsPage({
   const [sketchBank, setSketchBank] = useState<SketchBankItem[]>([]);
   const [sketchSearch, setSketchSearch] = useState('');
 
+  // AI script & storyboard generation
+  const [aiBusy, setAiBusy] = useState<'script' | 'storyboard' | null>(null);
+  const [aiMeta, setAiMeta] = useState<AIGenerationMeta | null>(null);
+  const [aiUseTrends, setAiUseTrends] = useState(() => getAIConfig().useTrendsSearch);
+
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [gList, iList, cList, pList] = await Promise.all([
+      const [gList, iList, cList, pList, tiposList] = await Promise.all([
         fetchGuiones(),
         fetchIdeas(),
         fetchCatalogos(),
-        fetchPiezasGanchoCta()
+        fetchPiezasGanchoCta(),
+        fetchGanchoTipos()
       ]);
       setGuiones(gList);
       setIdeas(iList);
       setCatalogos(cList);
       setPiezas(pList);
+      setGanchoTipos(tiposList);
     } finally {
       setLoading(false);
     }
@@ -432,6 +450,90 @@ export function ScriptsPage({
     }
   };
 
+  const handleGenerateScriptAI = async () => {
+    if (!editingGuion) return;
+    if (
+      escenas.some((s) => s.dialogo.trim()) &&
+      !window.confirm('Esto reemplazará los diálogos actuales de las escenas con una versión generada por IA. ¿Continuar?')
+    ) {
+      return;
+    }
+    setAiBusy('script');
+    try {
+      const originIdea = ideas.find((i) => i.id === editingGuion.idea_id);
+      const res = await generateScriptExpertWithAI({
+        titulo: titulo || editingGuion.titulo,
+        textoBase: originIdea?.texto_base || undefined,
+        pilar: editingGuion.pilar || undefined,
+        formato: editingGuion.formato || undefined,
+        objetivo: objetivo || undefined,
+        duracionSegundos: duracionMax,
+        tono: tono || undefined,
+        hookTypes: ganchoTipos,
+        useTrendsOverride: aiUseTrends
+      });
+      const baseTs = Date.now();
+      setEscenas(
+        res.bloques.map((b, idx) => ({
+          id: -(baseTs + idx),
+          guion_id: editingGuion.id,
+          orden: idx + 1,
+          tipo: b.tipo || 'historia',
+          inicio_s: b.inicio_s ?? null,
+          fin_s: b.fin_s ?? null,
+          dialogo: b.dialogo || '',
+          texto_pantalla: b.texto_pantalla || '',
+          plano: b.plano || 'Medio corto (frontal)',
+          camara: b.camara || 'Estática',
+          edicion: Array.isArray(b.edicion) ? b.edicion : [],
+          sketch_texto: b.indicaciones || null,
+          sketch_prompt: b.sketch_prompt || null,
+          grabado: false,
+          exportado: false
+        }))
+      );
+      setAiMeta(res.meta);
+      onNotify(`Guion generado con ${res.meta.providerLabel}. Recuerda guardar.`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'No se pudo generar el guion con IA');
+    } finally {
+      setAiBusy(null);
+    }
+  };
+
+  const handleCompleteStoryboardAI = async () => {
+    if (!editingGuion || escenas.length === 0) return;
+    setAiBusy('storyboard');
+    try {
+      const res = await completeStoryboardWithAI({
+        titulo: titulo || editingGuion.titulo,
+        escenas,
+        objetivo,
+        tono
+      });
+      setEscenas((prev) =>
+        prev.map((esc, idx) => {
+          const upd = res.updates.find((u) => u.orden === idx + 1) || res.updates[idx];
+          if (!upd) return esc;
+          return {
+            ...esc,
+            plano: upd.plano || esc.plano,
+            camara: upd.camara || esc.camara,
+            edicion: upd.edicion?.length ? upd.edicion : esc.edicion,
+            texto_pantalla: upd.texto_pantalla || esc.texto_pantalla,
+            sketch_texto: upd.sketch_texto || esc.sketch_texto,
+            sketch_prompt: upd.sketch_prompt || esc.sketch_prompt
+          };
+        })
+      );
+      onNotify(`Storyboard completado con ${res.meta.providerLabel}. Recuerda guardar.`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'No se pudo completar el storyboard');
+    } finally {
+      setAiBusy(null);
+    }
+  };
+
   const launchTeleprompter = () => {
     const tpBlocks: ScriptBlock[] = escenas
       .filter((b) => b.dialogo.trim() || b.texto_pantalla.trim())
@@ -532,6 +634,73 @@ export function ScriptsPage({
               {saving ? 'Guardando...' : 'Guardar'}
             </button>
           </div>
+        </div>
+
+        {/* AI Script & Storyboard Generator */}
+        <div className="card" style={{ gap: 8, padding: 12 }}>
+          <div className="row-between" style={{ flexWrap: 'wrap', gap: 6 }}>
+            <div className="row" style={{ gap: 6 }}>
+              <Sparkles size={16} color="#a78bfa" />
+              <strong style={{ fontSize: '0.92rem' }}>Asistente IA de Guion y Storyboard</strong>
+            </div>
+            <span className="badge estructura">{getActiveProviderLabel()}</span>
+          </div>
+          {getAIConfig().provider === 'gemini' && (
+            <label className="row" style={{ gap: 6, fontSize: '0.82rem', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={aiUseTrends}
+                onChange={(e) => setAiUseTrends(e.target.checked)}
+              />
+              Consultar tendencias y memes en Google antes de redactar
+            </label>
+          )}
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={aiBusy !== null}
+              onClick={() => void handleGenerateScriptAI()}
+            >
+              <Sparkles size={14} color="#a78bfa" />
+              {aiBusy === 'script' ? 'Redactando guion...' : 'Redactar guion con IA'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              disabled={aiBusy !== null || escenas.length === 0}
+              onClick={() => void handleCompleteStoryboardAI()}
+            >
+              <Clapperboard size={14} color="#38bdf8" />
+              {aiBusy === 'storyboard' ? 'Completando storyboard...' : 'Completar Storyboard con IA'}
+            </button>
+          </div>
+          {aiMeta && (aiMeta.trendSummary || aiMeta.sources.length > 0) && (
+            <div style={{ background: 'var(--bg-input)', padding: 10, borderRadius: 8, fontSize: '0.82rem' }}>
+              <strong>Tendencias consultadas:</strong>
+              {aiMeta.trendSummary && (
+                <p className="muted" style={{ margin: '4px 0', whiteSpace: 'pre-wrap' }}>
+                  {aiMeta.trendSummary}
+                </p>
+              )}
+              {aiMeta.sources.length > 0 && (
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                  {aiMeta.sources.slice(0, 4).map((s, si) => (
+                    <a
+                      key={si}
+                      href={s.uri}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="badge"
+                      style={{ textDecoration: 'none' }}
+                    >
+                      {s.title.slice(0, 30)}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Metadata Card */}

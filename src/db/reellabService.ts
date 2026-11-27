@@ -1,5 +1,13 @@
 import { createId, getDB } from './database';
 import { getSupabaseClient } from './cloudSync';
+import {
+  generateIdeasExpertWithAI,
+  generateScriptExpertWithAI,
+  getBrandContext,
+  setBrandContext,
+  type AIGenerationMeta,
+  type GeneratedScriptBlock
+} from '../services/aiGenerator';
 import type { ScriptBlock } from '../types/models';
 import type {
   BloqueStoryboard,
@@ -20,23 +28,8 @@ import type {
 } from '../types/reellab';
 
 const ACTIVE_USER_KEY = 'guion-en-pantalla-active-user-v1';
-const BRAND_CONTEXT_KEY = 'guion-en-pantalla-brand-context-v1';
 
-export function getBrandContext(): string {
-  try {
-    return localStorage.getItem(BRAND_CONTEXT_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
-export function setBrandContext(text: string): void {
-  try {
-    localStorage.setItem(BRAND_CONTEXT_KEY, text.trim());
-  } catch {
-    // ignore
-  }
-}
+export { getBrandContext, setBrandContext, type AIGenerationMeta, type GeneratedScriptBlock };
 
 export function getStoredActiveUser(): Votante | null {
   try {
@@ -858,18 +851,6 @@ export function estimateWordStats(bloques: BloqueStoryboard[]): {
   return { words, seconds: Math.round(words / 3) };
 }
 
-export interface GeneratedScriptBlock {
-  tipo: BloqueStoryboard['tipo'];
-  titulo: string;
-  inicio_s: number;
-  fin_s: number;
-  dialogo: string;
-  texto_pantalla?: string;
-  plano?: string;
-  camara?: string;
-  indicaciones?: string;
-}
-
 export async function generateScriptWithAI(input: {
   titulo: string;
   textoBase?: string;
@@ -879,48 +860,10 @@ export async function generateScriptWithAI(input: {
   ganchoTipo?: string;
   duracionSegundos?: number;
   tono?: string;
+  useTrendsOverride?: boolean;
 }): Promise<GeneratedScriptBlock[]> {
-  const client = getSupabaseClient();
-  if (!client) throw new Error('Sin conexión a Supabase');
-
-  const brandContext = getBrandContext();
-  const combinedBase = [
-    brandContext ? `Contexto de la marca: ${brandContext}` : '',
-    input.textoBase || ''
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-
-  const { data, error } = await client.functions.invoke('generar-guion', {
-    body: {
-      ...input,
-      textoBase: combinedBase || undefined
-    }
-  });
-
-  if (error) {
-    let detail = error.message;
-    try {
-      const ctx = (error as { context?: Response }).context;
-      if (ctx && typeof ctx.json === 'function') {
-        const errBody = (await ctx.json()) as { error?: string };
-        if (errBody?.error) detail = errBody.error;
-      }
-    } catch {
-      // ignore parse errors
-    }
-    throw new Error(detail);
-  }
-
-  if (data?.error) {
-    throw new Error(String(data.error));
-  }
-
-  const bloques = (data?.bloques || []) as GeneratedScriptBlock[];
-  if (!Array.isArray(bloques) || bloques.length === 0) {
-    throw new Error('La IA no devolvió escenas.');
-  }
-  return bloques;
+  const res = await generateScriptExpertWithAI(input);
+  return res.bloques;
 }
 
 export async function generateIdeasWithAI(input: {
@@ -929,39 +872,38 @@ export async function generateIdeasWithAI(input: {
   pilar?: string;
   formato?: string;
   loteId?: number | null;
-}): Promise<number> {
-  const count = input.cantidad || 5;
-  const brandContext = getBrandContext();
-  const prompt = [
-    `Devuelve el JSON con bloques donde cada bloque sea una idea diferente de video (titulo = titulo corto de la idea, dialogo = resumen breve de la idea de 1 a 2 frases, texto_pantalla = formato recomendado, indicaciones = pilar). Genera exactamente ${count} bloques cortos en el JSON.`,
-    brandContext ? `Contexto fijo de la marca: ${brandContext}` : ''
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-  const bloques = await generateScriptWithAI({
-    titulo: `${count} ideas de videos sobre: ${input.tema}`,
-    textoBase: prompt,
+  existingTitles?: string[];
+  hookTypes?: GanchoTipo[];
+  useTrendsOverride?: boolean;
+}): Promise<{ count: number; meta: AIGenerationMeta }> {
+  const res = await generateIdeasExpertWithAI({
+    tema: input.tema,
+    cantidad: input.cantidad,
     pilar: input.pilar,
     formato: input.formato,
-    duracionSegundos: 30
+    existingTitles: input.existingTitles,
+    hookTypes: input.hookTypes,
+    useTrendsOverride: input.useTrendsOverride
   });
 
   let created = 0;
-  for (const b of bloques) {
-    const titulo = (b.titulo || '').trim();
+  for (const item of res.ideas) {
+    const titulo = (item.titulo || '').trim();
     if (!titulo) continue;
-    const rawFormat = (b.texto_pantalla || '').replace(/^Formato:\s*/i, '').trim();
     await createIdea({
       titulo,
-      texto_base: b.dialogo?.trim() || undefined,
-      pilar: input.pilar || undefined,
-      formato: input.formato || rawFormat || undefined,
+      texto_base: item.texto_base?.trim() || undefined,
+      pilar: input.pilar || item.pilar || undefined,
+      formato: input.formato || item.formato || undefined,
+      palabras_clave: item.palabras_clave || undefined,
+      nivel_conciencia: item.nivel_conciencia ?? null,
+      contexto: item.tendencia_usada ? `Tendencia: ${item.tendencia_usada}` : undefined,
+      origen: 'ia',
       lote_id: input.loteId ?? null
     });
     created++;
   }
-  return created;
+  return { count: created, meta: res.meta };
 }
 
 export async function createAIGuionFromIdea(
@@ -999,7 +941,9 @@ export async function createAIGuionFromIdea(
     texto_pantalla: b.texto_pantalla || '',
     plano: b.plano || 'Medio corto (frontal)',
     camara: b.camara || 'Estática',
-    sketch_texto: b.indicaciones || null
+    edicion: Array.isArray(b.edicion) ? b.edicion : [],
+    sketch_texto: b.indicaciones || null,
+    sketch_prompt: b.sketch_prompt || null
   }));
 
   const { error: blkErr } = await client.from('bloque').insert(rows);

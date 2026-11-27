@@ -3,6 +3,7 @@ import { ChevronRight, FilePlus2, FileText, FileUp, Sparkles, Trash2 } from 'luc
 import { ReferenceVideoSection } from '../components/ReferenceVideoSection';
 import { createId } from '../db/database';
 import { generateScriptWithAI } from '../db/reellabService';
+import { getActiveProviderLabel } from '../services/aiGenerator';
 import {
   DOCUMENT_TYPES,
   type ContentPiece,
@@ -89,7 +90,7 @@ export function PieceDetailPage({
       }));
       await onCreateDocumentWithBlocks('Guion generado con IA', 'Guion', blocks);
       setShowAIForm(false);
-      onNotify('Guion generado con Claude IA');
+      onNotify(`Guion generado con ${getActiveProviderLabel()}`);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'No se pudo generar el guion');
     } finally {
@@ -143,9 +144,12 @@ export function PieceDetailPage({
 
       {showAIForm && (
         <form onSubmit={handleGenerateAI} className="card">
-          <div className="row">
-            <Sparkles size={18} color="#a78bfa" />
-            <strong>Generar guion automático con Claude (Anthropic)</strong>
+          <div className="row-between" style={{ flexWrap: 'wrap', gap: 6 }}>
+            <div className="row">
+              <Sparkles size={18} color="#a78bfa" />
+              <strong>Generar guion con Experto IA</strong>
+            </div>
+            <span className="badge estructura">{getActiveProviderLabel()}</span>
           </div>
           <div className="field">
             <label htmlFor="ai-topic">¿De qué trata el video o qué quieres decir?</label>

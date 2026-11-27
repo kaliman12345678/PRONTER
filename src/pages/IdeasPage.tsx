@@ -24,6 +24,7 @@ import {
   deleteIdea,
   fetchAllIdeaVotos,
   fetchCatalogos,
+  fetchGanchoTipos,
   fetchGuiones,
   fetchIdeas,
   fetchLotes,
@@ -35,8 +36,14 @@ import {
   saveIdeaVoto,
   updateIdea
 } from '../db/reellabService';
+import {
+  getActiveProviderLabel,
+  getAIConfig,
+  type AIGenerationMeta
+} from '../services/aiGenerator';
 import type {
   CatalogoItem,
+  GanchoTipo,
   GuionResumen,
   IdeaConPuntaje,
   IdeaEstado,
@@ -103,6 +110,7 @@ export function IdeasPage({
   const [catalogos, setCatalogos] = useState<CatalogoItem[]>([]);
   const [pesos, setPesos] = useState<PesoViralidad[]>([]);
   const [guiones, setGuiones] = useState<GuionResumen[]>([]);
+  const [ganchoTipos, setGanchoTipos] = useState<GanchoTipo[]>([]);
   const [votantes, setVotantes] = useState<Votante[]>([]);
   const [allVotos, setAllVotos] = useState<VotoIdea[]>([]);
   const [loading, setLoading] = useState(true);
@@ -136,6 +144,9 @@ export function IdeasPage({
   const [showAIIdeasForm, setShowAIIdeasForm] = useState(false);
   const [aiIdeasTopic, setAiIdeasTopic] = useState('');
   const [aiIdeasCount, setAiIdeasCount] = useState(5);
+  const [aiIdeasPilar, setAiIdeasPilar] = useState('');
+  const [aiUseTrends, setAiUseTrends] = useState(() => getAIConfig().useTrendsSearch);
+  const [aiTrendMeta, setAiTrendMeta] = useState<AIGenerationMeta | null>(null);
   const [generatingAIIdeas, setGeneratingAIIdeas] = useState(false);
 
   // Excel preview modal
@@ -147,7 +158,7 @@ export function IdeasPage({
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [ideaList, loteList, catList, pesoList, guionList, votantesRes, votosList] =
+      const [ideaList, loteList, catList, pesoList, guionList, votantesRes, votosList, tiposList] =
         await Promise.all([
           fetchIdeas(),
           fetchLotes(),
@@ -155,13 +166,15 @@ export function IdeasPage({
           fetchPesosViralidad(),
           fetchGuiones(),
           fetchVotantes(),
-          fetchAllIdeaVotos()
+          fetchAllIdeaVotos(),
+          fetchGanchoTipos()
         ]);
       setIdeas(ideaList);
       setLotes(loteList);
       setCatalogos(catList);
       setPesos(pesoList);
       setGuiones(guionList);
+      setGanchoTipos(tiposList);
       setVotantes(votantesRes.users.filter((u) => u.activo));
       setAllVotos(votosList);
     } finally {
@@ -488,6 +501,7 @@ export function IdeasPage({
 
   const handleGenerateWithAI = async (idea: IdeaConPuntaje) => {
     setAiLoadingId(idea.id);
+    const providerLabel = getActiveProviderLabel();
     try {
       const bloquesIA = await generateScriptWithAI({
         titulo: idea.titulo,
@@ -498,7 +512,7 @@ export function IdeasPage({
       });
       const guion = await createAIGuionFromIdea(idea, bloquesIA);
       await loadAll();
-      onNotify('Guion generado con Claude IA');
+      onNotify(`Guion generado con ${providerLabel}`);
       onOpenStoryboard(guion);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Error generando guion con IA');
@@ -513,16 +527,21 @@ export function IdeasPage({
     setGeneratingAIIdeas(true);
     try {
       const targetLoteId =
-        filterLote !== 'all' ? Number(filterLote) : lotes[0]?.id ?? null;
-      const count = await generateIdeasWithAI({
+        filterLote !== 'all' ? Number(filterLote) : mostRecentLote?.id ?? null;
+      const { count, meta } = await generateIdeasWithAI({
         tema: aiIdeasTopic.trim(),
         cantidad: aiIdeasCount,
-        loteId: targetLoteId
+        pilar: aiIdeasPilar || undefined,
+        loteId: targetLoteId,
+        existingTitles: ideas.map((i) => i.titulo),
+        hookTypes: ganchoTipos,
+        useTrendsOverride: aiUseTrends
       });
       setAiIdeasTopic('');
       setShowAIIdeasForm(false);
+      setAiTrendMeta(meta.trendSummary || meta.sources.length ? meta : null);
       await loadAll();
-      onNotify(`${count} ideas nuevas generadas con Claude IA`);
+      onNotify(`${count} ideas nuevas generadas con ${meta.providerLabel}`);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'No se pudieron generar ideas');
     } finally {
@@ -616,9 +635,12 @@ export function IdeasPage({
 
       {showAIIdeasForm && (
         <form onSubmit={handleGenerateAIIdeas} className="card">
-          <div className="row">
-            <Sparkles size={18} color="#a78bfa" />
-            <strong>Generar ideas nuevas con Claude IA</strong>
+          <div className="row-between" style={{ flexWrap: 'wrap', gap: 6 }}>
+            <div className="row">
+              <Sparkles size={18} color="#a78bfa" />
+              <strong>Generar ideas con Experto IA</strong>
+            </div>
+            <span className="badge estructura">{getActiveProviderLabel()}</span>
           </div>
           <div className="field">
             <label htmlFor="ai-ideas-topic">
@@ -634,19 +656,47 @@ export function IdeasPage({
               required
             />
           </div>
-          <div className="field">
-            <label htmlFor="ai-ideas-count">¿Cuántas ideas quieres?</label>
-            <select
-              id="ai-ideas-count"
-              className="select"
-              value={aiIdeasCount}
-              onChange={(e) => setAiIdeasCount(Number(e.target.value))}
-            >
-              <option value={3}>3 ideas</option>
-              <option value={5}>5 ideas</option>
-              <option value={8}>8 ideas</option>
-            </select>
+          <div className="grid-2">
+            <div className="field">
+              <label htmlFor="ai-ideas-count">¿Cuántas ideas?</label>
+              <select
+                id="ai-ideas-count"
+                className="select"
+                value={aiIdeasCount}
+                onChange={(e) => setAiIdeasCount(Number(e.target.value))}
+              >
+                <option value={3}>3 ideas</option>
+                <option value={5}>5 ideas</option>
+                <option value={8}>8 ideas</option>
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="ai-ideas-pilar">Pilar (opcional)</label>
+              <select
+                id="ai-ideas-pilar"
+                className="select"
+                value={aiIdeasPilar}
+                onChange={(e) => setAiIdeasPilar(e.target.value)}
+              >
+                <option value="">Automático</option>
+                {pilares.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
+          {getAIConfig().provider === 'gemini' && (
+            <label className="row" style={{ gap: 8, fontSize: '0.84rem', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={aiUseTrends}
+                onChange={(e) => setAiUseTrends(e.target.checked)}
+              />
+              Consultar tendencias, temas del momento y memes en Google antes de generar
+            </label>
+          )}
           <div className="row">
             <button
               type="submit"
@@ -655,7 +705,7 @@ export function IdeasPage({
               disabled={generatingAIIdeas}
             >
               <Sparkles size={16} />
-              {generatingAIIdeas ? 'Generando ideas...' : 'Generar ideas'}
+              {generatingAIIdeas ? 'Investigando y generando...' : 'Generar ideas'}
             </button>
             <button
               type="button"
@@ -666,6 +716,44 @@ export function IdeasPage({
             </button>
           </div>
         </form>
+      )}
+
+      {aiTrendMeta && (
+        <div className="card" style={{ gap: 6, borderColor: 'rgba(56, 189, 248, 0.4)' }}>
+          <div className="row-between">
+            <strong>Tendencias y memes consultados ({aiTrendMeta.providerLabel})</strong>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{ width: 28, height: 28 }}
+              onClick={() => setAiTrendMeta(null)}
+              aria-label="Cerrar resumen de tendencias"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          {aiTrendMeta.trendSummary && (
+            <p className="muted" style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '0.84rem' }}>
+              {aiTrendMeta.trendSummary}
+            </p>
+          )}
+          {aiTrendMeta.sources.length > 0 && (
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              {aiTrendMeta.sources.slice(0, 5).map((s, idx) => (
+                <a
+                  key={idx}
+                  href={s.uri}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="badge"
+                  style={{ textDecoration: 'none' }}
+                >
+                  {s.title.slice(0, 32)}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {showNewForm && (
