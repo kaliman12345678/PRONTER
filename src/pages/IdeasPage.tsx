@@ -29,6 +29,7 @@ import {
   fetchLotes,
   fetchPesosViralidad,
   fetchVotantes,
+  generateIdeasWithAI,
   generateScriptWithAI,
   rescueIdeaToLote,
   saveIdeaVoto,
@@ -130,6 +131,12 @@ export function IdeasPage({
   const [newFormato, setNewFormato] = useState('');
   const [newUrl, setNewUrl] = useState('');
   const [aiLoadingId, setAiLoadingId] = useState<number | null>(null);
+
+  // Generate multiple ideas with AI
+  const [showAIIdeasForm, setShowAIIdeasForm] = useState(false);
+  const [aiIdeasTopic, setAiIdeasTopic] = useState('');
+  const [aiIdeasCount, setAiIdeasCount] = useState(5);
+  const [generatingAIIdeas, setGeneratingAIIdeas] = useState(false);
 
   // Excel preview modal
   const [excelRows, setExcelRows] = useState<ExcelPreviewRow[] | null>(null);
@@ -500,6 +507,29 @@ export function IdeasPage({
     }
   };
 
+  const handleGenerateAIIdeas = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!aiIdeasTopic.trim()) return;
+    setGeneratingAIIdeas(true);
+    try {
+      const targetLoteId =
+        filterLote !== 'all' ? Number(filterLote) : lotes[0]?.id ?? null;
+      const count = await generateIdeasWithAI({
+        tema: aiIdeasTopic.trim(),
+        cantidad: aiIdeasCount,
+        loteId: targetLoteId
+      });
+      setAiIdeasTopic('');
+      setShowAIIdeasForm(false);
+      await loadAll();
+      onNotify(`${count} ideas nuevas generadas con Claude IA`);
+    } catch (err) {
+      onNotify(err instanceof Error ? err.message : 'No se pudieron generar ideas');
+    } finally {
+      setGeneratingAIIdeas(false);
+    }
+  };
+
   if (schemaMissing) {
     return (
       <div className="page-content">
@@ -549,6 +579,17 @@ export function IdeasPage({
             <Download size={15} />
             Plantilla
           </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => {
+              setShowAIIdeasForm((v) => !v);
+              setShowNewForm(false);
+            }}
+          >
+            <Sparkles size={15} color="#a78bfa" />
+            Generar ideas con IA
+          </button>
           <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>
             <FileSpreadsheet size={15} color="#34d399" />
             Subir Excel
@@ -562,13 +603,70 @@ export function IdeasPage({
           <button
             type="button"
             className="btn btn-primary btn-sm"
-            onClick={() => setShowNewForm((v) => !v)}
+            onClick={() => {
+              setShowNewForm((v) => !v);
+              setShowAIIdeasForm(false);
+            }}
           >
             <Plus size={15} />
             Nueva idea
           </button>
         </div>
       </div>
+
+      {showAIIdeasForm && (
+        <form onSubmit={handleGenerateAIIdeas} className="card">
+          <div className="row">
+            <Sparkles size={18} color="#a78bfa" />
+            <strong>Generar ideas nuevas con Claude IA</strong>
+          </div>
+          <div className="field">
+            <label htmlFor="ai-ideas-topic">
+              ¿Sobre qué tema, producto o situación quieres ideas?
+            </label>
+            <textarea
+              id="ai-ideas-topic"
+              className="textarea"
+              rows={3}
+              placeholder="Ej. Camisetas negras 4XL para hombres que buscan verse bien sin complicarse..."
+              value={aiIdeasTopic}
+              onChange={(e) => setAiIdeasTopic(e.target.value)}
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="ai-ideas-count">¿Cuántas ideas quieres?</label>
+            <select
+              id="ai-ideas-count"
+              className="select"
+              value={aiIdeasCount}
+              onChange={(e) => setAiIdeasCount(Number(e.target.value))}
+            >
+              <option value={3}>3 ideas</option>
+              <option value={5}>5 ideas</option>
+              <option value={8}>8 ideas</option>
+            </select>
+          </div>
+          <div className="row">
+            <button
+              type="submit"
+              className="btn btn-primary"
+              style={{ flex: 1 }}
+              disabled={generatingAIIdeas}
+            >
+              <Sparkles size={16} />
+              {generatingAIIdeas ? 'Generando ideas...' : 'Generar ideas'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowAIIdeasForm(false)}
+            >
+              Cancelar
+            </button>
+          </div>
+        </form>
+      )}
 
       {showNewForm && (
         <form onSubmit={handleCreateIdea} className="card">

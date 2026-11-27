@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Plus, Trash2, UserCheck, UserPlus } from 'lucide-react';
+import { Plus, Save, Sparkles, Trash2, UserCheck, UserPlus } from 'lucide-react';
 import {
   addCatalogoItem,
   deleteCatalogoItem,
   deleteVotante,
   fetchCatalogos,
   fetchPesosViralidad,
+  getBrandContext,
+  setBrandContext,
   toggleVotanteActivo,
   updatePesoViralidad
 } from '../db/reellabService';
@@ -49,6 +51,7 @@ export function ReelLabSettingsPage({
   const [selectedTipo, setSelectedTipo] = useState<CatalogoTipo>('pilar');
   const [newCatVal, setNewCatVal] = useState('');
   const [pesos, setPesos] = useState<PesoViralidad[]>([]);
+  const [brandCtx, setBrandCtx] = useState(() => getBrandContext());
 
   const loadSettings = async () => {
     const [cats, pList] = await Promise.all([
@@ -108,6 +111,35 @@ export function ReelLabSettingsPage({
 
   return (
     <div className="page-content">
+      <div className="card">
+        <div className="row">
+          <Sparkles size={20} color="#a78bfa" />
+          <strong>Contexto fijo de tu marca (para la IA)</strong>
+        </div>
+        <p className="muted" style={{ margin: 0 }}>
+          Describe qué vendes, quién es tu cliente y qué tono usar. La IA lo usará cada vez que
+          generes ideas o guiones.
+        </p>
+        <textarea
+          className="textarea"
+          rows={3}
+          placeholder="Ej. Somos NOXA, marca colombiana de camisetas y bóxers masculinos en tallas grandes (3XL-4XL). Tono cercano, práctico y sin rodeos."
+          value={brandCtx}
+          onChange={(e) => setBrandCtx(e.target.value)}
+        />
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          onClick={() => {
+            setBrandContext(brandCtx);
+            onNotify('Contexto de marca guardado');
+          }}
+        >
+          <Save size={15} />
+          Guardar contexto
+        </button>
+      </div>
+
       <div className="card">
         <div className="row">
           <UserCheck size={20} color="#38bdf8" />

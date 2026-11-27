@@ -20,6 +20,23 @@ import type {
 } from '../types/reellab';
 
 const ACTIVE_USER_KEY = 'guion-en-pantalla-active-user-v1';
+const BRAND_CONTEXT_KEY = 'guion-en-pantalla-brand-context-v1';
+
+export function getBrandContext(): string {
+  try {
+    return localStorage.getItem(BRAND_CONTEXT_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setBrandContext(text: string): void {
+  try {
+    localStorage.setItem(BRAND_CONTEXT_KEY, text.trim());
+  } catch {
+    // ignore
+  }
+}
 
 export function getStoredActiveUser(): Votante | null {
   try {
@@ -866,8 +883,19 @@ export async function generateScriptWithAI(input: {
   const client = getSupabaseClient();
   if (!client) throw new Error('Sin conexión a Supabase');
 
+  const brandContext = getBrandContext();
+  const combinedBase = [
+    brandContext ? `Contexto de la marca: ${brandContext}` : '',
+    input.textoBase || ''
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
   const { data, error } = await client.functions.invoke('generar-guion', {
-    body: input
+    body: {
+      ...input,
+      textoBase: combinedBase || undefined
+    }
   });
 
   if (error) {
@@ -885,6 +913,51 @@ export async function generateScriptWithAI(input: {
     throw new Error('La IA no devolvió escenas.');
   }
   return bloques;
+}
+
+export async function generateIdeasWithAI(input: {
+  tema: string;
+  cantidad?: number;
+  pilar?: string;
+  formato?: string;
+  loteId?: number | null;
+}): Promise<number> {
+  const count = input.cantidad || 5;
+  const brandContext = getBrandContext();
+  const prompt = [
+    `INSTRUCCIÓN ESPECIAL: No escribas un solo guion. Genera exactamente ${count} IDEAS DIFERENTES de videos cortos sobre: "${input.tema}".`,
+    `En el JSON "bloques", cada elemento debe representar UNA IDEA distinta:`,
+    `- titulo: Título atractivo de la idea`,
+    `- dialogo: Resumen concreto de qué trata el video y su gancho inicial`,
+    `- texto_pantalla: Formato recomendado (ej. Hablando a cámara, POV, Vlog)`,
+    `- indicaciones: Pilar o ángulo sugerido`,
+    brandContext ? `Contexto fijo de la marca: ${brandContext}` : ''
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const bloques = await generateScriptWithAI({
+    titulo: `Lluvia de ${count} ideas sobre: ${input.tema}`,
+    textoBase: prompt,
+    pilar: input.pilar,
+    formato: input.formato,
+    duracionSegundos: 45
+  });
+
+  let created = 0;
+  for (const b of bloques) {
+    const titulo = (b.titulo || '').trim();
+    if (!titulo) continue;
+    await createIdea({
+      titulo,
+      texto_base: b.dialogo?.trim() || undefined,
+      pilar: input.pilar || undefined,
+      formato: input.formato || b.texto_pantalla?.trim() || undefined,
+      lote_id: input.loteId ?? null
+    });
+    created++;
+  }
+  return created;
 }
 
 export async function createAIGuionFromIdea(
