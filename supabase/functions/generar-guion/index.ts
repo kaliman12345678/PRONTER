@@ -75,20 +75,41 @@ Reglas:
       .filter(Boolean)
       .join('\n');
 
-    const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1800,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
-      })
-    });
+    const callAnthropic = (modelId: string) =>
+      fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: modelId,
+          max_tokens: 1800,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }]
+        })
+      });
+
+    let anthropicRes = await callAnthropic('claude-sonnet-5-5');
+
+    // Auto-fallback to first active model from /v1/models if model ID changes
+    if (anthropicRes.status === 404) {
+      const modelsRes = await fetch('https://api.anthropic.com/v1/models', {
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+      });
+      if (modelsRes.ok) {
+        const modelsJson = await modelsRes.json();
+        const list = (modelsJson?.data || []) as { id: string }[];
+        const preferred =
+          list.find((m) => m.id.includes('sonnet')) ||
+          list.find((m) => m.id.includes('haiku')) ||
+          list[0];
+        if (preferred?.id) {
+          anthropicRes = await callAnthropic(preferred.id);
+        }
+      }
+    }
 
     if (!anthropicRes.ok) {
       const errText = await anthropicRes.text();
